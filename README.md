@@ -16,7 +16,7 @@ App pessoal que roda no navegador, sem servidor e sem login. Os dados ficam salv
 | Agenda | Semana com compromissos e rotina fixa (repetição diária/semanal), horas por área |
 | Ponto | Entrada, almoço, volta e saída; saída prevista; saldo do mês e banco de horas; exporta CSV |
 | Tarefas | Tarefas da casa e pessoais, avulsas ou repetindo todo dia/semana/mês |
-| Feira | Estoque estimado, consumo por semana, quando acaba, lista de compras (copia p/ WhatsApp), gastos |
+| Feira | Estoque estimado, consumo por semana, quando acaba, lista de compras (copia p/ WhatsApp), gastos, leitura da nota fiscal por foto |
 | Música | Cultos, ensaios e shows (categorias Igreja/Banda) e repertório por status, tom e instrumento |
 | Habilidades | Habilidades, nível, atividades que pode oferecer e resumo pronto para currículo |
 | Freelas | Projetos fora da Vasta, prazos, a receber, recebido, valor/hora real |
@@ -26,6 +26,9 @@ App pessoal que roda no navegador, sem servidor e sem login. Os dados ficam salv
 ## Como funcionam os cálculos
 - **Ponto:** trabalhado = (saída almoço − entrada) + (saída − volta). Saldo = trabalhado − jornada do dia. Diferenças até a tolerância (padrão 10 min) viram zero. Só dias fechados entram no banco.
 - **Feira:** o consumo semanal é calculado pelo intervalo entre compras (precisa de 2 compras), ou pelo valor que você informar no item. O estoque vai sendo descontado sozinho com o passar dos dias. Fica "Acabando" com 7 dias ou menos (ou abaixo do mínimo).
+
+## Nota fiscal por foto
+Em **Feira > 📷 Ler nota fiscal**, tire uma foto do cupom (ou 2 a 3 fotos se for comprido). O Claude lê a imagem e devolve loja, data, itens, quantidades e valores; você confere numa tela de revisão (pode desmarcar, corrigir e ligar cada linha a um item do estoque ou criar um novo) e registra. Funciona só quando o app é aberto pelo link do Claude (usa o seu limite de uso do Claude e pede permissão na primeira vez).
 
 ## Importante: backup
 Os dados ficam só no navegador onde você usa. Em **Ajustes > Exportar backup** você baixa um arquivo `.json`; use **Importar backup** para levar tudo para outro aparelho. Limpar os dados do navegador apaga o app.

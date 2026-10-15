@@ -43,6 +43,12 @@ const copiar = (txt, noFallback) => {
   const falhou = () => noFallback ? (document.querySelector('#txt-copia')?.select(), toast('Use Ctrl+C / Copiar do celular')) : mostrarTexto('Copiar texto', txt);
   try { navigator.clipboard.writeText(txt).then(() => toast('Copiado!'), falhou); } catch (e) { falhou(); }
 };
+function aviso(titulo, msg) {
+  const d = $('#dlg2');
+  d.innerHTML = `<form class="form"><h2>${esc(titulo)}</h2><p class="wide" style="margin:0;white-space:pre-line">${esc(msg)}</p><div class="form-actions"><span class="sp"></span><button type="button" class="btn primary" data-x>Entendi</button></div></form>`;
+  d.querySelector('[data-x]').onclick = () => d.close();
+  d.showModal();
+}
 function confirmar(msg, sim, rotulo = 'Confirmar') {
   const d = $('#dlg2');
   d.innerHTML = `<form class="form"><h2>Tem certeza?</h2><p class="wide" style="margin:0">${esc(msg)}</p><div class="form-actions"><span class="sp"></span><button type="button" class="btn" data-x>Cancelar</button><button type="button" class="btn primary danger-bg" data-ok>${esc(rotulo)}</button></div></form>`;
@@ -469,6 +475,7 @@ const A = {
   },
   toggleComprar: ({ id }) => { const it = byId('itens', id); it.comprar = !it.comprar; save(); render(); },
   novaFeira: () => abrirFeira(),
+  lerNota: () => lerNota(),
   copiarLista: () => {
     const linhas = S.itens.map(it => [it, itemInfo(it)]).filter(([it, i]) => naLista(it, i)).map(([it, i]) => `- ${it.nome} (${num(i.sugerido, 2)} ${it.unid})`);
     copiar(`🛒 Lista da feira (${fmtData(hoje(), { day: '2-digit', month: '2-digit' })})\n` + linhas.join('\n'));
@@ -651,7 +658,7 @@ V.tarefas = () => {
 };
 
 function abrirFeira() {
-  if (!S.itens.length) return toast('Cadastre os itens da feira primeiro.');
+  if (!S.itens.length) return toast(nfEstado === 'ok' ? 'Cadastre os itens ou use "Ler nota fiscal" para criá-los pela foto.' : 'Cadastre os itens da feira primeiro.');
   const lista = S.itens.map(it => [it, itemInfo(it)]).sort((a, b) => (naLista(b[0], b[1]) - naLista(a[0], a[1])) || a[0].nome.localeCompare(b[0].nome));
   dlg.innerHTML = `<form class="form"><h2>Registrar feira</h2>
     <label class="field"><span>Data</span><input type="date" name="data" value="${hoje()}" required></label>
@@ -679,6 +686,148 @@ function abrirFeira() {
   dlg.querySelector('[data-cancel]').onclick = () => dlg.close();
   dlg.showModal();
 }
+// ================= nota fiscal por foto (lida pelo Claude) =================
+// nfEstado: 'pwa' (fora do Claude), 'espera' (carregando), 'ok' (pode ler), 'off' (sem permissão/sem imagens)
+let sampleApi = null, sampleImg = null, nfEstado = window.claude ? 'espera' : 'pwa';
+const SECOES = ['Hortifruti', 'Mercearia', 'Carnes e ovos', 'Laticínios', 'Padaria', 'Bebidas', 'Limpeza', 'Higiene', 'Outros'];
+const UNIDS = ['un', 'kg', 'g', 'L', 'pct', 'cx', 'dz', 'lata'];
+const nfBotao = (cls = '') => nfEstado === 'off' || nfEstado === 'espera' ? '' : `<button class="btn ${cls}" data-act="lerNota">📷 Ler nota fiscal</button>`;
+const NF_MSG = {
+  rate_limited: 'Muitas leituras seguidas ou limite de uso do Claude atingido. Tente mais tarde.',
+  image_rejected: 'A foto não foi aceita. Tente outra (JPG ou PNG).',
+  session_expired: 'Entre de novo na sua conta do Claude e tente outra vez.',
+  invalid_json: 'Não consegui entender esta nota. Tente uma foto mais nítida, reta e com boa luz.',
+  empty_completion: 'Não consegui entender esta nota. Tente uma foto mais nítida, reta e com boa luz.',
+  refused: 'Não consegui ler esta imagem. Confira se é a foto da nota.',
+};
+async function reduzirFoto(file, lado = 2400) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, lado / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    return await new Promise(r => c.toBlob(b => r(b || file), 'image/jpeg', 0.88));
+  } catch (e) { return file; }
+}
+function nfPrompt() {
+  const cad = S.itens.map(it => `${it.nome} | ${it.unid} | ${it.cat}`).join('\n') || '(nenhum)';
+  return `As imagens são foto(s) de um cupom ou nota fiscal de compra (supermercado, feira, atacado) no Brasil. Se houver mais de uma, são partes da MESMA nota, em ordem; não repita itens que aparecem em duas fotos.
+
+Extraia todos os itens comprados.
+
+Itens que a pessoa já tem cadastrados (nome | unidade | seção):
+${cad}
+
+Responda somente com JSON neste formato:
+{"loja":"nome da loja ou null","data":"AAAA-MM-DD ou null","total":123.45,"itens":[{"descricao":"texto como está na nota","nome":"nome curto e legível","qtd":1,"unid":"un","valor":9.99,"existente":"nome exato de um item cadastrado ou null","secao":"Mercearia"}]}
+
+Regras:
+- "nome": expanda abreviações (ex.: "ARR T1 TIO J 5KG" vira "Arroz Tio João 5kg"). Sem código de barras.
+- "valor": valor total pago na linha, já com desconto do item, número com ponto decimal.
+- "qtd" e "unid": unid é uma de ${UNIDS.join(', ')}. Produto pesado vai em kg (ex.: 0,535 kg de tomate: qtd 0.535, unid "kg").
+- "existente": só quando for claramente o mesmo produto de um item cadastrado (ex.: cadastrado "Arroz" e na nota "ARROZ TIPO 1 5KG"). Nesse caso use a unidade do item cadastrado em "unid" e converta "qtd" para ela quando der (item em kg e nota com 2 pacotes de 1 kg: qtd 2).
+- "secao": uma de ${SECOES.join(', ')}.
+- Ignore impostos, troco, forma de pagamento e linhas de desconto geral.
+- "total": o valor total da nota, se aparecer.
+- Se a imagem não for uma nota fiscal legível, responda {"erro":"motivo curto"}.`;
+}
+function lerNota() {
+  if (nfEstado === 'pwa') return aviso('Ler nota fiscal', 'A leitura da foto da nota usa o Claude, então funciona quando você abre o app pelo link do Claude (no navegador ou no app do Claude no iPhone). Os itens registrados lá ficam salvos naquele aparelho.');
+  if (nfEstado !== 'ok') return;
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.multiple = (sampleImg.maxCount || 1) > 1;
+  inp.accept = (sampleImg.mediaTypes || []).join(',') || 'image/*';
+  inp.onchange = () => { const fs = [...inp.files].slice(0, Math.min(4, sampleImg.maxCount || 1)); if (fs.length) enviarNota(fs); };
+  inp.click();
+}
+async function enviarNota(files) {
+  const ctl = new AbortController();
+  dlg.innerHTML = `<div class="form"><h2>Lendo a nota…</h2><p class="wide muted" style="margin:0">O Claude está lendo ${files.length > 1 ? 'as fotos' : 'a foto'}. Pode levar até um minuto. Na primeira vez ele pede sua permissão.</p><div class="wide bar"><i class="nf-anda"></i></div><div class="form-actions"><span class="sp"></span><button type="button" class="btn" data-cancel>Cancelar</button></div></div>`;
+  dlg.querySelector('[data-cancel]').onclick = () => { ctl.abort(); dlg.close(); };
+  if (!dlg.open) dlg.showModal();
+  try {
+    const imgs = await Promise.all(files.map(f => reduzirFoto(f)));
+    const r = await sampleApi.json(nfPrompt(), { images: imgs, signal: ctl.signal, modelTier: 'default' });
+    if (!dlg.open) return;
+    if (!r || r.erro || !Array.isArray(r.itens) || !r.itens.length) { dlg.close(); return aviso('Não deu para ler', (r && r.erro ? `O Claude disse: ${r.erro}.\n\n` : '') + 'Tente uma foto mais nítida, com a nota reta, inteira e com boa luz. Se a nota for comprida, tire 2 ou 3 fotos e escolha todas juntas.'); }
+    revisarNota(r);
+  } catch (e) {
+    const code = e && e.code;
+    if (code === 'cancelled') return;
+    dlg.close();
+    if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed', 'images_unavailable'].includes(code)) {
+      nfEstado = 'off'; render();
+      return toast(code === 'not_granted' ? 'Leitura da nota não permitida. Você pode registrar a feira à mão.' : 'Leitura de fotos não está disponível aqui.');
+    }
+    toast(NF_MSG[code] || 'Falha ao ler a nota. Tente de novo.');
+  }
+}
+function revisarNota(r) {
+  const n = s => String(s || '').trim().toLowerCase();
+  const porNome = nome => S.itens.find(it => n(it.nome) === n(nome));
+  const linhas = r.itens.filter(x => x && (x.nome || x.descricao)).map(x => {
+    const ex = porNome(x.existente) || porNome(x.nome);
+    return { nome: String(x.nome || x.descricao).trim(), desc: String(x.descricao || ''), qtd: +x.qtd || 1, unid: UNIDS.includes(x.unid) ? x.unid : 'un', valor: Math.round((+x.valor || 0) * 100) / 100, secao: SECOES.includes(x.secao) ? x.secao : 'Outros', itemId: ex ? ex.id : 'novo' };
+  });
+  const dataOk = /^\d{4}-\d{2}-\d{2}$/.test(r.data || '') && r.data <= hoje() ? r.data : hoje();
+  const opts = sel => `<option value="novo"${sel === 'novo' ? ' selected' : ''}>＋ Novo item</option>` + [...S.itens].sort((a, b) => a.nome.localeCompare(b.nome)).map(it => `<option value="${it.id}"${sel === it.id ? ' selected' : ''}>${esc(it.nome)} (${esc(it.unid)})</option>`).join('');
+  const total = +r.total || 0;
+  dlg.innerHTML = `<form class="form"><h2>Confira a nota</h2>
+    <label class="field"><span>Data</span><input type="date" name="data" value="${dataOk}" required></label>
+    <label class="field"><span>Local</span><input name="local" value="${esc(r.loja || '')}" placeholder="Ex.: Atacadão"></label>
+    <p class="wide muted small" style="margin:0">Desmarque o que não quer registrar e corrija o que o Claude leu errado. "Item" liga a compra a um item do seu estoque; "Novo item" cria um.</p>
+    <div class="wide nf-lista">${linhas.map((l, k) => `<div class="nf-row" data-k="${k}">
+      <label class="nf-top"><input type="checkbox" name="ok_${k}" checked><input name="nome_${k}" value="${esc(l.nome)}" aria-label="Nome"></label>
+      ${l.desc ? `<div class="small muted nf-desc">${esc(l.desc)}</div>` : ''}
+      <div class="nf-campos">
+        <label class="field nf-item"><span>Item</span><select name="item_${k}">${opts(l.itemId)}</select></label>
+        <label class="field"><span>Qtd</span><input type="number" step="any" min="0" name="q_${k}" value="${l.qtd}"></label>
+        <label class="field nf-novo"><span>Unid.</span><select name="u_${k}">${UNIDS.map(u => `<option${u === l.unid ? ' selected' : ''}>${u}</option>`).join('')}</select></label>
+        <label class="field"><span>Valor (R$)</span><input type="number" step="any" min="0" name="v_${k}" value="${l.valor}"></label>
+        <label class="field nf-novo nf-sec"><span>Seção</span><select name="s_${k}">${SECOES.map(s => `<option${s === l.secao ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
+      </div></div>`).join('')}</div>
+    <p class="wide small" style="margin:0">Soma dos itens marcados: <b id="nf-soma"></b>${total ? ` · total na nota: <b>${brl(total)}</b> <span id="nf-dif" class="warn"></span>` : ''}</p>
+    <div class="form-actions"><button type="button" class="btn ghost" data-outra>Outra foto</button><span class="sp"></span><button type="button" class="btn ghost" data-cancel>Cancelar</button><button class="btn primary">Registrar compra</button></div></form>`;
+  const form = dlg.querySelector('form'), el = (p, k) => form.elements[p + k];
+  const atualizar = () => {
+    let soma = 0;
+    linhas.forEach((l, k) => {
+      const row = form.querySelector(`.nf-row[data-k="${k}"]`), on = el('ok_', k).checked, novo = el('item_', k).value === 'novo';
+      row.classList.toggle('off', !on); row.classList.toggle('existe', !novo);
+      if (on) soma += +el('v_', k).value || 0;
+    });
+    $('#nf-soma').textContent = brl(soma);
+    const dif = $('#nf-dif'); if (dif) dif.textContent = Math.abs(soma - total) > 0.05 ? `(diferença de ${brl(soma - total)})` : '✓';
+  };
+  form.oninput = form.onchange = atualizar; atualizar();
+  form.onsubmit = e => {
+    e.preventDefault();
+    const data = form.elements.data.value, local = form.elements.local.value.trim();
+    const atual = {}, novos = {};
+    let cont = 0, criados = 0;
+    linhas.forEach((l, k) => {
+      if (!el('ok_', k).checked) return;
+      const q = +el('q_', k).value || 0, v = +el('v_', k).value || 0;
+      if (q <= 0 && v <= 0) return;
+      let it = byId('itens', el('item_', k).value);
+      if (!it) {
+        const nome = el('nome_', k).value.trim() || l.nome;
+        it = porNome(nome) || novos[n(nome)];
+        if (!it) { it = { id: uid(), nome, cat: el('s_', k).value, unid: el('u_', k).value, estoque: 0, estoqueData: hoje(), comprar: false }; S.itens.push(it); novos[n(nome)] = it; criados++; }
+      }
+      if (!(it.id in atual)) atual[it.id] = itemInfo(it).atual || 0;
+      atual[it.id] += q;
+      S.compras.push({ id: uid(), data, local, itemId: it.id, qtd: q, valor: v });
+      cont++;
+    });
+    if (!cont) return toast('Nenhum item marcado.');
+    for (const [id, q] of Object.entries(atual)) { const it = byId('itens', id); it.estoque = Math.round(q * 1000) / 1000; it.estoqueData = hoje(); it.comprar = false; }
+    save(); dlg.close(); render(); toast(`Compra registrada: ${cont} itens${criados ? `, ${criados} novos no estoque` : ''}`);
+  };
+  dlg.querySelector('[data-cancel]').onclick = () => dlg.close();
+  dlg.querySelector('[data-outra]').onclick = () => { dlg.close(); lerNota(); };
+  if (!dlg.open) dlg.showModal();
+}
 V.feira = () => {
   const infos = S.itens.map(it => [it, itemInfo(it)]);
   const ordem = { falta: 0, acabando: 1, ok: 2 };
@@ -695,7 +844,7 @@ V.feira = () => {
     const l = infos.filter(([it, i]) => naLista(it, i)).sort((a, b) => a[0].cat.localeCompare(b[0].cat) || a[0].nome.localeCompare(b[0].nome));
     const est = l.reduce((s, [, i]) => s + (i.precoUnit ? i.precoUnit * i.sugerido : 0), 0);
     corpo = `<div class="stats"><div class="stat"><span>Itens na lista</span><b>${l.length}</b></div><div class="stat"><span>Custo estimado</span><b>${brl(est)}</b></div></div>
-    <div class="btns section"><button class="btn" data-act="copiarLista">Copiar lista (WhatsApp)</button><button class="btn primary" data-act="novaFeira">Registrar feira</button></div>
+    <div class="btns section"><button class="btn" data-act="copiarLista">Copiar lista (WhatsApp)</button>${nfBotao()}<button class="btn primary" data-act="novaFeira">Registrar feira</button></div>
     <div class="list">${l.map(([it, i]) => `<div class="li" data-act="editItem" data-id="${it.id}"><div class="grow"><div class="t">${esc(it.nome)}</div><div class="small muted">${esc(it.cat)} · comprar ~${num(i.sugerido, 2)} ${esc(it.unid)}${i.precoUnit ? ' · ~' + brl(i.precoUnit * i.sugerido) : ''}</div></div><span class="tag ${i.status}">${it.comprar && i.status === 'ok' ? 'Manual' : STATUS_LBL[i.status]}</span></div>`).join('') || vazio('Nada para comprar agora')}</div>`;
   } else {
     const semanas = [...Array(8)].map((_, k) => { const ini = inicioSemana(addDays(new Date(), -7 * (7 - k))); return [iso(ini), iso(addDays(ini, 6))]; });
@@ -709,7 +858,7 @@ V.feira = () => {
     <div class="card"><h3 style="margin-bottom:10px">Por seção (este mês)</h3>${Object.entries(porCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="meta-row"><div class="lbl"><span>${esc(k)}</span><b>${brl(v)}</b></div><div class="bar"><i style="width:${v / gastoMes(ym) * 100}%"></i></div></div>`).join('') || vazio('Sem compras este mês')}</div></div>
     <h2>Histórico de feiras</h2><div class="list">${hist.map(([k, cs]) => `<div class="li" style="cursor:default"><div class="grow"><div class="t">${fmtData(cs[0].data)}${cs[0].local ? ' · ' + esc(cs[0].local) : ''} · ${brl(cs.reduce((s, c) => s + (+c.valor || 0), 0))}</div><div class="small muted">${cs.map(c => `${esc(byId('itens', c.itemId)?.nome || '?')} (${num(c.qtd, 2)})`).join(', ')}</div></div><button class="mini" data-act="apagarFeira" data-k="${esc(k)}">Apagar</button></div>`).join('') || vazio('Nenhuma feira registrada')}</div>`;
   }
-  return head('Feira', 'Estoque, previsão de quando acaba e quanto você gasta', `<button class="btn" data-act="novoItem">+ Item</button><button class="btn primary" data-act="novaFeira">Registrar feira</button>`) +
+  return head('Feira', 'Estoque, previsão de quando acaba e quanto você gasta', `<button class="btn" data-act="novoItem">+ Item</button>${nfBotao()}<button class="btn primary" data-act="novaFeira">Registrar feira</button>`) +
     `<div class="tabs">${tabs.map(([k, l]) => `<button class="btn ${feiraTab === k ? 'on' : ''}" data-act="feiraTab" data-t="${k}">${l}</button>`).join('')}</div>${corpo}`;
 };
 
@@ -976,6 +1125,16 @@ setInterval(() => { const r = location.hash.replace('#/', '') || 'painel'; if (r
 // App instalado (GitHub Pages): modo offline e notificações
 if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 // Google Agenda: só funciona quando o app é aberto pelo Claude (conector do Google Agenda)
+// Nota fiscal por foto: só quando o app é aberto pelo Claude
+(async () => {
+  try {
+    if (!window.claude || !window.claude.use) { nfEstado = 'pwa'; return; }
+    const sp = await window.claude.use('sample');
+    const lim = sp ? await sp.limits().catch(() => null) : null;
+    if (sp && lim && lim.images) { sampleApi = sp; sampleImg = lim.images; nfEstado = 'ok'; } else nfEstado = 'off';
+  } catch (e) { nfEstado = 'off'; }
+  if (!dlg.open) render();
+})();
 (async () => {
   try {
     if (!window.claude || !window.claude.use) return;

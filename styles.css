@@ -116,3 +116,20 @@ body{font-variant-numeric:tabular-nums}
 .gbar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-bottom:12px}
 .gtag{font-size:.68rem;padding:0 5px;border-radius:5px;background:var(--surface);border:1px solid var(--border)}
 .btn[disabled]{opacity:.6;cursor:default}
+.nf-lista{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto}
+.nf-row{background:var(--surface2);border-radius:10px;padding:10px}
+.nf-row.off{opacity:.5}
+.nf-top{display:flex;gap:8px;align-items:center}.nf-top input[type=checkbox]{width:20px;height:20px;flex-shrink:0}
+.nf-top input:not([type]){font-weight:600}
+.nf-desc{margin:4px 0 0 28px}
+.nf-campos{display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:8px;margin-top:8px}
+.nf-sec{grid-column:1/-1}
+.nf-row.existe .nf-novo{display:none}
+.nf-row.existe .nf-campos{grid-template-columns:2fr 1fr 1.2fr}
+.nf-anda{width:40%!important;animation:nfanda 1.4s ease-in-out infinite}
+@keyframes nfanda{0%{margin-left:-40%}100%{margin-left:100%}}
+@media (max-width:720px){.nf-campos,.nf-row.existe .nf-campos{grid-template-columns:1fr 1fr}.nf-item{grid-column:1/-1}}
+.nf-lista,.nf-row,.nf-campos>*,.nf-top input{min-width:0}
+@media (max-width:720px){.nf-lista{max-height:none;overflow:visible}.nf-campos{gap:6px}}
+.form>*{min-width:0}.form-actions{flex-wrap:wrap}
+@media (max-width:720px){.form{grid-template-columns:minmax(0,1fr)}}
