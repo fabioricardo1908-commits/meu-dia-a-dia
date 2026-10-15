@@ -1,5 +1,5 @@
 /* Service worker: funciona offline e mostra as notificações enviadas pelo servidor de lembretes. */
-const CACHE = 'meu-dia-v3';
+const CACHE = 'meu-dia-v4';
 const ARQUIVOS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -11,7 +11,8 @@ self.addEventListener('activate', e => {
 // Rede primeiro (pega atualizações), cache se estiver offline
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
-  e.respondWith(fetch(e.request).then(r => {
+  // no-cache: sempre confere no servidor se há versão nova (o GitHub Pages manda guardar por 10 min)
+  e.respondWith(fetch(e.request.url, { cache: 'no-cache' }).then(r => {
     const copia = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copia)); return r;
   }).catch(() => caches.match(e.request).then(r => r || caches.match('index.html'))));
 });

@@ -1192,7 +1192,13 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }
 // atualiza relógio do painel a cada minuto (sem atrapalhar formulários abertos)
 setInterval(() => { const r = location.hash.replace('#/', '') || 'painel'; if (r === 'painel' && !dlg.open) render(); }, 60000);
 // App instalado (GitHub Pages): modo offline e notificações
-if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
+if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  const tinhaSW = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  // versão nova instalada: recarrega uma vez para já usar o código novo
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (tinhaSW && !dlg.open && !recarregou) { recarregou = true; location.reload(); } });
+}
+var recarregou = false;
 // Google Agenda: só funciona quando o app é aberto pelo Claude (conector do Google Agenda)
 // Nota fiscal por foto: só quando o app é aberto pelo Claude
 (async () => {
