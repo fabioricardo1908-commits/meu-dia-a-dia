@@ -1,0 +1,1063 @@
+'use strict';
+/* Meu dia a dia: app pessoal que roda 100% no navegador (dados no localStorage). */
+
+// ================= utilidades =================
+const $ = (s, r = document) => r.querySelector(s);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const pad = n => String(n).padStart(2, '0');
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseISO = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const diffDias = (a, b) => Math.round((parseISO(b) - parseISO(a)) / 864e5);
+const hoje = () => iso(new Date());
+const inicioSemana = d => addDays(d, -((d.getDay() + 6) % 7)); // segunda-feira
+const toMin = t => {
+  if (t == null || t === '') return null;
+  const s = String(t).trim(), neg = s.startsWith('-');
+  const [h, m] = s.replace(/^[-+]/, '').split(':').map(Number);
+  if (isNaN(h)) return null;
+  const v = h * 60 + (m || 0);
+  return neg ? -v : v;
+};
+const minToHHMM = m => `${m < 0 ? '-' : ''}${pad(Math.floor(Math.abs(m) / 60))}:${pad(Math.abs(m) % 60)}`;
+const fmtDur = m => { const s = m < 0 ? '-' : ''; m = Math.abs(Math.round(m)); return `${s}${Math.floor(m / 60)}h${pad(m % 60)}`; };
+const fmtSaldo = m => (m > 0 ? '+' : '') + fmtDur(m);
+const fmtHora = m => `${pad(Math.floor(m / 60) % 24)}:${pad(Math.round(m) % 60)}`;
+const cls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+const brl = v => (+v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const num = (v, d = 1) => (+v || 0).toLocaleString('pt-BR', { maximumFractionDigits: d });
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtData = (s, o = { weekday: 'short', day: '2-digit', month: '2-digit' }) => s ? parseISO(s).toLocaleDateString('pt-BR', o) : '';
+const agoraHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const dur = (a, b) => { const x = toMin(a), y = toMin(b); return x != null && y != null && y > x ? y - x : 0; };
+const toast = msg => { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), 2200); };
+function mostrarTexto(titulo, txt, extra = '') {
+  const d = $('#dlg2');
+  d.innerHTML = `<form class="form"><h2>${esc(titulo)}</h2><label class="field wide"><span>Selecione e copie o texto abaixo</span><textarea id="txt-copia" rows="10" readonly>${esc(txt)}</textarea></label><div class="form-actions">${extra}<span class="sp"></span><button type="button" class="btn" data-x>Fechar</button><button type="button" class="btn primary" data-copy>Copiar</button></div></form>`;
+  d.querySelector('[data-x]').onclick = () => d.close();
+  d.querySelector('[data-copy]').onclick = () => copiar(txt, true);
+  d.showModal(); const ta = d.querySelector('textarea'); ta.focus(); ta.select();
+  return d;
+}
+const copiar = (txt, noFallback) => {
+  const falhou = () => noFallback ? (document.querySelector('#txt-copia')?.select(), toast('Use Ctrl+C / Copiar do celular')) : mostrarTexto('Copiar texto', txt);
+  try { navigator.clipboard.writeText(txt).then(() => toast('Copiado!'), falhou); } catch (e) { falhou(); }
+};
+function confirmar(msg, sim, rotulo = 'Confirmar') {
+  const d = $('#dlg2');
+  d.innerHTML = `<form class="form"><h2>Tem certeza?</h2><p class="wide" style="margin:0">${esc(msg)}</p><div class="form-actions"><span class="sp"></span><button type="button" class="btn" data-x>Cancelar</button><button type="button" class="btn primary danger-bg" data-ok>${esc(rotulo)}</button></div></form>`;
+  d.querySelector('[data-x]').onclick = () => d.close();
+  d.querySelector('[data-ok]').onclick = () => { d.close(); sim(); };
+  d.showModal();
+}
+
+// ================= dados =================
+const KEY = 'meu-dia-a-dia:v1';
+let carregarExemplosDepois = false;
+const CATS = {
+  vasta: { n: 'Trabalho (Vasta)', c: '#3b82f6' }, freela: { n: 'Freelance', c: '#8b5cf6' },
+  igreja: { n: 'Igreja (música)', c: '#f59e0b' }, banda: { n: 'Banda', c: '#ef4444' },
+  pilates: { n: 'Pilates', c: '#10b981' }, namorada: { n: 'Namorada', c: '#ec4899' },
+  casa: { n: 'Casa', c: '#a16207' }, games: { n: 'Videogame', c: '#06b6d4' },
+  estudo: { n: 'Estudos', c: '#6366f1' }, vagas: { n: 'Vagas/Entrevistas', c: '#14b8a6' },
+  feira: { n: 'Feira/Compras', c: '#84cc16' }, saude: { n: 'Saúde', c: '#22c55e' },
+  pessoal: { n: 'Pessoal', c: '#94a3b8' },
+};
+const catOpts = Object.entries(CATS).map(([k, v]) => [k, v.n]);
+const DIAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const DIAS_LONGOS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+
+const defaults = () => ({
+  settings: { nome: 'Fábio', jornada: [0, 480, 480, 480, 480, 480, 0], almoco: 60, tolerancia: 10, saldoInicial: 0, metas: { pilates: 2, namorada: 8, games: 4, freela: 6, estudo: 3, casa: 3 } },
+  eventos: [], ponto: {}, tarefas: [], itens: [], compras: [], musicas: [], habilidades: [], atividades: [], freelas: [], vagas: [],
+});
+let S;
+function carregar() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* vazio */ }
+  carregarDe(raw);
+}
+function carregarDe(raw) {
+  S = Object.assign(defaults(), raw || {});
+  S.settings = Object.assign(defaults().settings, S.settings || {});
+  S.google = Object.assign({ eventos: [], sync: null, cats: {} }, S.google || {});
+  S.lembretes = Object.assign(defLembretes(), S.lembretes || {});
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Não consegui salvar no navegador!'); }
+}
+carregar();
+try { if (!localStorage.getItem(KEY)) { carregarExemplosDepois = true; } } catch (e) { carregarExemplosDepois = true; }
+
+// ================= agenda =================
+function ocorrencias(dataISO) {
+  const wd = parseISO(dataISO).getDay();
+  return S.eventos.filter(e => {
+    if (!e.data || e.data > dataISO || (e.ate && dataISO > e.ate)) return false;
+    if (e.rec === 'diaria') return true;
+    if (e.rec === 'semanal') return (e.dias && e.dias.length) ? e.dias.map(String).includes(String(wd)) : parseISO(e.data).getDay() === wd;
+    return e.data === dataISO;
+  }).concat(googleNoDia(dataISO)).sort((a, b) => (a.inicio || '').localeCompare(b.inicio || ''));
+}
+function horasPorCat(inicio, dias = 7) {
+  const tot = {};
+  for (let i = 0; i < dias; i++) {
+    for (const e of ocorrencias(iso(addDays(inicio, i)))) tot[e.cat] = (tot[e.cat] || 0) + dur(e.inicio, e.fim);
+  }
+  return tot;
+}
+const evAct = e => e.google ? `data-act="verGoogle" data-id="${esc(e.gid)}"` : `data-act="editEvento" data-id="${e.id}"`;
+const evHTML = (e, d) => `<div class="ev" style="border-color:${CATS[e.cat]?.c || '#999'}" ${evAct(e)}><b>${esc(e.titulo)}</b><span class="muted">${e.inicio ? esc(e.inicio) + (e.fim ? '–' + esc(e.fim) : '') : 'Dia todo'}${e.rec && e.rec !== 'nenhuma' ? ' ↻' : ''}${e.google ? ' <span class="gtag">Google</span>' : ''}</span></div>`;
+
+// ================= Google Agenda (via conector do Claude) =================
+const GCAL = 'Google Calendar';
+let mcpApi = null, gStatus = '', gSincronizando = false;
+const G_PALAVRAS = [
+  ['vagas', /entrevista|vaga|processo seletivo|recrutador/i],
+  ['pilates', /pilates/i],
+  ['igreja', /culto|louvor|igreja|minist[eé]rio|escala|c[eé]lula|ebd/i],
+  ['banda', /banda|show|gig|quarteto|tocar|apresenta[cç]/i],
+  ['freela', /freela|cliente|or[cç]amento|entrega/i],
+  ['vasta', /vasta|reuni[aã]o|daily|alinhamento|sprint|1:1/i],
+  ['saude', /m[eé]dic|consulta|dentista|exame|academia|treino/i],
+  ['estudo', /aula|curso|estud|prova|faculdade/i],
+  ['namorada', /namorada|anivers[aá]rio de namoro|date/i],
+  ['games', /game|jogo|jogar|playstation|xbox/i],
+  ['feira', /feira|mercado|compras/i],
+  ['casa', /faxina|limpeza|arrumar/i],
+];
+function catGoogle(titulo) {
+  const fixa = S.google.cats[titulo];
+  if (fixa && CATS[fixa]) return fixa;
+  for (const [c, re] of G_PALAVRAS) if (re.test(titulo)) return c;
+  return 'pessoal';
+}
+function googleNoDia(d) {
+  return S.google.eventos.filter(g => g.data <= d && d <= (g.dataFim || g.data))
+    .map(g => ({ ...g, id: 'g:' + g.gid, google: true, cat: catGoogle(g.titulo), rec: 'nenhuma', inicio: g.data === d ? g.inicio : '', fim: g.data === d ? g.fim : '' }));
+}
+function converterGoogle(ev) {
+  const ini = ev.start?.dateTime || ev.start?.date, fim = ev.end?.dateTime || ev.end?.date || ini;
+  if (!ini || !ev.id) return null;
+  const diaTodo = !ev.start?.dateTime;
+  const g = { gid: ev.id, titulo: String(ev.summary || '(sem título)').trim(), data: ini.slice(0, 10), local: ev.location || '', link: ev.htmlLink || '', meet: ev.conferenceUrl || '' };
+  if (diaTodo) { g.inicio = ''; g.fim = ''; g.dataFim = fim.slice(0, 10) > g.data ? iso(addDays(parseISO(fim.slice(0, 10)), -1)) : g.data; }
+  else { g.inicio = ini.slice(11, 16); g.fim = fim.slice(0, 10) === g.data ? fim.slice(11, 16) : '23:59'; g.dataFim = g.data; }
+  return g;
+}
+function msgErroGoogle(e) {
+  switch (e && e.code) {
+    case 'server_not_connected': case 'server_not_found': case 'selection_required':
+      return 'O Google Agenda não está conectado ao seu Claude. Conecte em Configurações > Conectores no claude.ai e tente de novo.';
+    case 'needs_reauth': return 'O acesso ao Google Agenda expirou. Reconecte em Configurações > Conectores no claude.ai.';
+    case 'not_in_manifest': case 'approval_required': case 'consent_required':
+      return 'O app precisa da sua permissão para ler o Google Agenda. Toque em Sincronizar e permita o acesso.';
+    case 'blocked_by_policy': return 'Sua organização bloqueou o acesso ao Google Agenda por aqui.';
+    case 'server_unavailable': case 'rate_limited': return 'O Google Agenda não respondeu agora. Tente de novo em instantes.';
+    case 'tool_error': return 'O Google Agenda recusou a consulta: ' + (e.message || '');
+    case 'not_granted': case 'capability_disabled': case 'capability_removed':
+      mcpApi = null; return 'A sincronização não está disponível nesta tela.';
+    default: return 'Não consegui sincronizar agora. Tente de novo em instantes.';
+  }
+}
+async function syncGoogle(manual) {
+  if (!mcpApi || gSincronizando) return;
+  gSincronizando = true; gStatus = ''; render();
+  const inicio = iso(addDays(new Date(), -14)) + 'T00:00:00', fim = iso(addDays(new Date(), 90)) + 'T23:59:00';
+  const lista = [];
+  try {
+    let token = null;
+    for (let pag = 0; pag < 8; pag++) {
+      const input = { startTime: inicio, endTime: fim, pageSize: 250, orderBy: 'startTime' };
+      if (token) input.pageToken = token;
+      const r = await mcpApi.callTool(GCAL, 'list_events', input, { cache: false });
+      const pl = (r && r.payload) || {};
+      for (const ev of (pl.events || [])) {
+        if (ev.status === 'cancelled' || String(ev.summary || '').startsWith('⏰')) continue;
+        if ((ev.attendees || []).some(a => a.self && a.responseStatus === 'declined')) continue;
+        const g = converterGoogle(ev); if (g) lista.push(g);
+      }
+      token = pl.nextPageToken; if (!token) break;
+    }
+    S.google.eventos = lista; S.google.sync = new Date().toISOString(); save();
+    if (manual) toast(`${lista.length} eventos trazidos do Google Agenda`);
+  } catch (e) { gStatus = msgErroGoogle(e); }
+  gSincronizando = false; if (!dlg.open) render();
+}
+function gBarHTML() {
+  const qtd = S.google.eventos.length;
+  const quando = S.google.sync ? new Date(S.google.sync).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : null;
+  if (!mcpApi) return quando ? `<div class="gbar small muted">Google Agenda: ${qtd} eventos, atualizado em ${quando}. Para atualizar, abra o app pelo Claude.</div>` : '';
+  return `<div class="gbar"><button class="btn sm" data-act="syncGoogle" ${gSincronizando ? 'disabled' : ''}>${gSincronizando ? 'Sincronizando…' : '↻ Sincronizar Google Agenda'}</button>
+    <span class="small ${gStatus ? 'neg' : 'muted'}">${gStatus ? esc(gStatus) : quando ? `${qtd} eventos do Google, atualizado em ${quando}` : 'Traga seus eventos do Google Agenda para cá'}</span></div>`;
+}
+function verGoogle(gid) {
+  const g = S.google.eventos.find(x => x.gid === gid); if (!g) return;
+  const cat = catGoogle(g.titulo);
+  dlg.innerHTML = `<form class="form"><h2>${esc(g.titulo)}</h2>
+    <p class="wide" style="margin:0">${fmtData(g.data, { weekday: 'long', day: 'numeric', month: 'long' })}${g.dataFim && g.dataFim !== g.data ? ' até ' + fmtData(g.dataFim) : ''}${g.inicio ? ` · ${g.inicio}–${g.fim}` : ' · dia todo'}${g.local ? `<br><span class="muted">${esc(g.local)}</span>` : ''}</p>
+    <label class="field wide"><span>Categoria neste app (vale para todos os eventos com esse nome)</span><select id="g-cat">${catOpts.map(([v, l]) => `<option value="${v}"${v === cat ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+    <p class="wide muted small" style="margin:0">Este evento vem do Google Agenda. Para mudar data ou horário, edite lá e sincronize de novo.</p>
+    <div class="form-actions">${g.link ? `<a class="btn" href="${esc(g.link)}" target="_blank" rel="noopener">Abrir no Google</a>` : ''}${g.meet ? `<a class="btn" href="${esc(g.meet)}" target="_blank" rel="noopener">Entrar na chamada</a>` : ''}<span class="sp"></span><button type="button" class="btn ghost" data-cancel>Fechar</button><button class="btn primary">Salvar categoria</button></div></form>`;
+  const form = dlg.querySelector('form');
+  form.onsubmit = e => { e.preventDefault(); S.google.cats[g.titulo] = $('#g-cat').value; save(); dlg.close(); render(); };
+  dlg.querySelector('[data-cancel]').onclick = () => dlg.close();
+  dlg.showModal();
+}
+
+// ================= ponto =================
+const MARCAS = [['e1', 'Entrada'], ['s1', 'Saída almoço'], ['e2', 'Volta almoço'], ['s2', 'Saída']];
+function calcDia(d) {
+  const r = S.ponto[d] || {}, tipo = r.tipo || 'normal';
+  let esperado = S.settings.jornada[parseISO(d).getDay()] || 0;
+  if (tipo === 'folga' || tipo === 'feriado') esperado = 0;
+  let trab = dur(r.e1, r.s1) + dur(r.e2, r.s2);
+  if (r.e1 && !r.s1 && !r.e2 && r.s2) trab = dur(r.e1, r.s2); // sem almoço
+  if (tipo === 'atestado') trab = esperado;
+  const completo = tipo !== 'normal' || !!r.s2 || (!!r.s1 && !r.e2 && d < hoje());
+  let saldo = trab - esperado;
+  if (Math.abs(saldo) <= (S.settings.tolerancia || 0)) saldo = 0;
+  return { r, tipo, esperado, trab, saldo, completo };
+}
+function trabAteAgora(d) {
+  const c = calcDia(d), r = c.r, now = toMin(agoraHM());
+  let t = c.trab;
+  if (d === hoje()) {
+    if (r.e1 && !r.s1 && !r.s2) t += Math.max(0, now - toMin(r.e1));
+    else if (r.e2 && !r.s2) t += Math.max(0, now - toMin(r.e2));
+  }
+  return t;
+}
+function previsaoSaida(d) {
+  const c = calcDia(d), r = c.r, esp = c.esperado, alm = +S.settings.almoco || 0;
+  if (!r.e1 || !esp) return null;
+  if (r.s2) return `saiu ${r.s2}`;
+  const e1 = toMin(r.e1);
+  if (!r.s1) return fmtHora(e1 + esp + alm);
+  const manha = toMin(r.s1) - e1;
+  if (!r.e2) return fmtHora(toMin(r.s1) + alm + esp - manha);
+  return fmtHora(toMin(r.e2) + esp - manha);
+}
+function saldoTotal() {
+  let t = +S.settings.saldoInicial || 0;
+  for (const d of Object.keys(S.ponto)) { const c = calcDia(d); if (c.completo) t += c.saldo; }
+  return t;
+}
+function baterPonto() {
+  const d = hoje(), r = S.ponto[d] ||= {};
+  const k = MARCAS.find(([k]) => !r[k]);
+  if (!k) return toast('Os 4 registros de hoje já foram feitos.');
+  r[k[0]] = agoraHM(); save(); render(); toast(`${k[1]} registrada às ${r[k[0]]}`);
+}
+
+// ================= tarefas =================
+function feita(t) {
+  if (!t.feitaEm) return false;
+  const h = hoje();
+  if (t.rec === 'diaria') return t.feitaEm === h;
+  if (t.rec === 'semanal') return iso(inicioSemana(parseISO(t.feitaEm))) === iso(inicioSemana(parseISO(h)));
+  if (t.rec === 'mensal') return t.feitaEm.slice(0, 7) === h.slice(0, 7);
+  return true;
+}
+const REC_LBL = { nenhuma: '', diaria: 'todo dia', semanal: 'toda semana', mensal: 'todo mês' };
+const tarefaHTML = t => {
+  const f = feita(t);
+  return `<div class="li ${f ? 'done' : ''}" data-act="editTarefa" data-id="${t.id}"><input type="checkbox" ${f ? 'checked' : ''} data-act="toggleTarefa" data-id="${t.id}"><span class="dot" style="background:${CATS[t.cat]?.c || '#999'}"></span><div class="grow"><div class="t">${esc(t.titulo)}</div><div class="small muted">${[REC_LBL[t.rec || 'nenhuma'], t.data ? 'até ' + fmtData(t.data) : ''].filter(Boolean).join(' · ')}</div></div></div>`;
+};
+
+// ================= feira =================
+function itemInfo(it) {
+  const cs = S.compras.filter(c => c.itemId === it.id).sort((a, b) => a.data.localeCompare(b.data));
+  let porDia = null, fonte = '';
+  if (+it.consumoSemana > 0) { porDia = it.consumoSemana / 7; fonte = 'informado'; }
+  else if (cs.length >= 2) {
+    const dias = diffDias(cs[0].data, cs.at(-1).data);
+    const q = cs.slice(0, -1).reduce((s, c) => s + (+c.qtd || 0), 0);
+    if (dias > 0 && q > 0) { porDia = q / dias; fonte = 'histórico de compras'; }
+  }
+  const base = +it.estoque || 0, desde = it.estoqueData || hoje();
+  const passados = Math.max(0, diffDias(desde, hoje()));
+  const atual = porDia ? Math.max(0, base - porDia * passados) : base;
+  const diasRest = porDia ? atual / porDia : null;
+  const acabaEm = diasRest != null ? iso(addDays(new Date(), Math.floor(diasRest))) : null;
+  let status = 'ok';
+  if (atual <= 0.0001) status = 'falta';
+  else if ((diasRest != null && diasRest <= 7) || (+it.minimo && atual <= +it.minimo)) status = 'acabando';
+  const ultimo = cs.at(-1);
+  const precoUnit = ultimo && +ultimo.qtd > 0 ? ultimo.valor / ultimo.qtd : null;
+  const sugerido = ultimo ? +ultimo.qtd : (porDia ? Math.ceil(porDia * 7) : 1);
+  return { porDia, fonte, atual, diasRest, acabaEm, status, ultimo, precoUnit, sugerido, compras: cs };
+}
+const STATUS_LBL = { ok: 'Ok', acabando: 'Acabando', falta: 'Em falta' };
+const naLista = (it, inf) => it.comprar || inf.status !== 'ok';
+function gastoEntre(a, b) { return S.compras.filter(c => c.data >= a && c.data <= b).reduce((s, c) => s + (+c.valor || 0), 0); }
+function gastoMes(ym) { return S.compras.filter(c => c.data.startsWith(ym)).reduce((s, c) => s + (+c.valor || 0), 0); }
+
+// ================= formulários genéricos =================
+const dlg = $('#dlg');
+function fieldHTML(f, val) {
+  val = val ?? f.def ?? '';
+  const id = 'f_' + f.k;
+  let input;
+  switch (f.type) {
+    case 'textarea': input = `<textarea id="${id}" name="${f.k}" rows="3" placeholder="${esc(f.ph || '')}">${esc(val)}</textarea>`; break;
+    case 'select': input = `<select id="${id}" name="${f.k}">${f.options.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(val) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
+    case 'checks': {
+      const arr = Array.isArray(val) ? val.map(String) : [];
+      input = `<div class="checks">${f.options.length ? f.options.map(([v, l]) => `<label class="chk"><input type="checkbox" name="${f.k}" value="${esc(v)}"${arr.includes(String(v)) ? ' checked' : ''}> ${esc(l)}</label>`).join('') : `<span class="muted small">${esc(f.vazio || 'Nada cadastrado ainda')}</span>`}</div>`;
+      return `<div class="field${f.wide ? ' wide' : ''}"><span>${esc(f.label)}</span>${input}</div>`;
+    }
+    case 'checkbox':
+      return `<div class="field${f.wide ? ' wide' : ''}"><span>${esc(f.label)}</span><label class="chk"><input type="checkbox" name="${f.k}"${val ? ' checked' : ''}> ${esc(f.text || 'Sim')}</label></div>`;
+    default:
+      input = `<input id="${id}" name="${f.k}" type="${f.type || 'text'}" value="${esc(val)}"${f.step ? ` step="${f.step}"` : ''}${f.req ? ' required' : ''} placeholder="${esc(f.ph || '')}">`;
+  }
+  return `<label class="field${f.wide ? ' wide' : ''}"><span>${esc(f.label)}</span>${input}</label>`;
+}
+function readField(form, f) {
+  if (f.type === 'checks') return [...form.querySelectorAll(`input[name="${f.k}"]:checked`)].map(i => i.value);
+  const el = form.elements[f.k];
+  if (f.type === 'checkbox') return el.checked;
+  if (f.type === 'number') return el.value === '' ? null : Number(el.value);
+  return el.value.trim();
+}
+function openForm({ title, fields, value = {}, onSave, onDelete, nota }) {
+  dlg.innerHTML = `<form class="form"><h2>${esc(title)}</h2>${nota ? `<p class="wide muted small" style="margin:0">${nota}</p>` : ''}${fields.map(f => fieldHTML(f, value[f.k])).join('')}
+  <div class="form-actions">${onDelete ? '<button type="button" class="btn danger" data-del>Excluir</button>' : ''}<span class="sp"></span><button type="button" class="btn ghost" data-cancel>Cancelar</button><button class="btn primary">Salvar</button></div></form>`;
+  const form = dlg.querySelector('form');
+  form.onsubmit = e => {
+    e.preventDefault();
+    const out = {};
+    for (const f of fields) out[f.k] = readField(form, f);
+    if (onSave(out) === false) return;
+    dlg.close(); save(); render();
+  };
+  dlg.querySelector('[data-cancel]').onclick = () => dlg.close();
+  const del = dlg.querySelector('[data-del]');
+  if (del) del.onclick = () => confirmar('Excluir este item?', () => { onDelete(); dlg.close(); save(); render(); }, 'Excluir');
+  dlg.showModal();
+}
+function crud(coll, nome, fields, item, preset = {}, opts = {}) {
+  openForm({
+    title: (item ? 'Editar ' : 'Novo: ') + nome, fields, value: item || preset, nota: opts.nota,
+    onSave: o => {
+      if (opts.antes && opts.antes(o, item) === false) return false;
+      if (item) Object.assign(item, o); else S[coll].push({ id: uid(), ...o });
+    },
+    onDelete: item ? () => { S[coll] = S[coll].filter(x => x !== item); } : null,
+  });
+}
+const byId = (coll, id) => S[coll].find(x => x.id === id);
+
+// ================= campos de cada cadastro =================
+const F = {
+  evento: [
+    { k: 'titulo', label: 'Título', req: 1, wide: 1, ph: 'Ex.: Ensaio na igreja' },
+    { k: 'cat', label: 'Categoria', type: 'select', options: catOpts },
+    { k: 'data', label: 'Data (ou início da repetição)', type: 'date', req: 1 },
+    { k: 'inicio', label: 'Início', type: 'time' },
+    { k: 'fim', label: 'Fim', type: 'time' },
+    { k: 'rec', label: 'Repetir', type: 'select', options: [['nenhuma', 'Não repete'], ['diaria', 'Todo dia'], ['semanal', 'Toda semana']] },
+    { k: 'ate', label: 'Repetir até (opcional)', type: 'date' },
+    { k: 'dias', label: 'Dias da semana (se repetir toda semana)', type: 'checks', options: DIAS.map((d, i) => [String(i), d]), wide: 1 },
+    { k: 'local', label: 'Local', wide: 1 },
+    { k: 'notas', label: 'Notas', type: 'textarea', wide: 1 },
+  ],
+  tarefa: [
+    { k: 'titulo', label: 'Tarefa', req: 1, wide: 1, ph: 'Ex.: Lavar roupa' },
+    { k: 'cat', label: 'Categoria', type: 'select', options: catOpts, def: 'casa' },
+    { k: 'rec', label: 'Repetição', type: 'select', options: [['nenhuma', 'Uma vez'], ['diaria', 'Todo dia'], ['semanal', 'Toda semana'], ['mensal', 'Todo mês']] },
+    { k: 'data', label: 'Prazo (opcional)', type: 'date' },
+    { k: 'notas', label: 'Notas', type: 'textarea', wide: 1 },
+  ],
+  item: [
+    { k: 'nome', label: 'Item', req: 1, ph: 'Ex.: Arroz' },
+    { k: 'cat', label: 'Seção', type: 'select', options: ['Hortifruti', 'Mercearia', 'Carnes e ovos', 'Laticínios', 'Padaria', 'Bebidas', 'Limpeza', 'Higiene', 'Outros'].map(x => [x, x]) },
+    { k: 'unid', label: 'Unidade', type: 'select', options: ['un', 'kg', 'g', 'L', 'pct', 'cx', 'dz', 'lata'].map(x => [x, x]) },
+    { k: 'estoque', label: 'Quanto tem em casa agora', type: 'number', step: 'any' },
+    { k: 'minimo', label: 'Estoque mínimo (opcional)', type: 'number', step: 'any' },
+    { k: 'consumoSemana', label: 'Consumo por semana (opcional)', type: 'number', step: 'any', ph: 'Deixe vazio para calcular sozinho' },
+    { k: 'comprar', label: 'Lista de compras', type: 'checkbox', text: 'Colocar na lista mesmo sem estar acabando' },
+    { k: 'notas', label: 'Notas (marca preferida etc.)', type: 'textarea', wide: 1 },
+  ],
+  musica: [
+    { k: 'titulo', label: 'Música', req: 1 },
+    { k: 'artista', label: 'Artista / ministério' },
+    { k: 'instrumento', label: 'Instrumento', type: 'select', options: [['baixo', 'Baixo'], ['teclado', 'Teclado'], ['ambos', 'Baixo e teclado']] },
+    { k: 'onde', label: 'Onde toca', type: 'select', options: [['igreja', 'Igreja'], ['banda', 'Banda'], ['ambos', 'Igreja e banda']] },
+    { k: 'tom', label: 'Tom', ph: 'Ex.: G' },
+    { k: 'bpm', label: 'BPM', type: 'number' },
+    { k: 'status', label: 'Status', type: 'select', options: [['aprender', 'Preciso aprender'], ['ensaiando', 'Ensaiando'], ['pronta', 'Pronta']] },
+    { k: 'link', label: 'Link (cifra, vídeo, Spotify)', type: 'url' },
+    { k: 'notas', label: 'Notas (estrutura, levadas, viradas)', type: 'textarea', wide: 1 },
+  ],
+  habilidade: [
+    { k: 'nome', label: 'Habilidade', req: 1, ph: 'Ex.: Edição de vídeo no DaVinci' },
+    { k: 'area', label: 'Área', ph: 'Ex.: Audiovisual, Design, Música' },
+    { k: 'nivel', label: 'Nível', type: 'select', options: [['1', '1 · Iniciante'], ['2', '2 · Básico'], ['3', '3 · Intermediário'], ['4', '4 · Avançado'], ['5', '5 · Especialista']], def: '3' },
+    { k: 'anos', label: 'Anos de experiência', type: 'number', step: 'any' },
+    { k: 'ferramentas', label: 'Ferramentas', wide: 1, ph: 'Ex.: DaVinci Resolve, Figma, Premiere' },
+    { k: 'notas', label: 'Provas / portfólio / observações', type: 'textarea', wide: 1 },
+  ],
+  freela: [
+    { k: 'projeto', label: 'Projeto', req: 1 },
+    { k: 'cliente', label: 'Cliente' },
+    { k: 'status', label: 'Status', type: 'select', options: [['orcamento', 'Orçamento enviado'], ['andamento', 'Em andamento'], ['entregue', 'Entregue (a receber)'], ['pago', 'Pago'], ['cancelado', 'Cancelado']] },
+    { k: 'valor', label: 'Valor (R$)', type: 'number', step: 'any' },
+    { k: 'prazo', label: 'Prazo de entrega', type: 'date' },
+    { k: 'pagoEm', label: 'Pago em', type: 'date' },
+    { k: 'horasEst', label: 'Horas estimadas', type: 'number', step: 'any' },
+    { k: 'horasGastas', label: 'Horas gastas', type: 'number', step: 'any' },
+    { k: 'notas', label: 'Notas', type: 'textarea', wide: 1 },
+  ],
+  vaga: [
+    { k: 'cargo', label: 'Cargo', req: 1 },
+    { k: 'empresa', label: 'Empresa', req: 1 },
+    { k: 'status', label: 'Etapa', type: 'select', options: [] },
+    { k: 'data', label: 'Data da candidatura', type: 'date' },
+    { k: 'link', label: 'Link da vaga', type: 'url' },
+    { k: 'salario', label: 'Salário / faixa' },
+    { k: 'proximo', label: 'Próximo passo', ph: 'Ex.: Entrevista com RH' },
+    { k: 'proximoData', label: 'Data do próximo passo', type: 'date' },
+    { k: 'notas', label: 'Notas', type: 'textarea', wide: 1 },
+  ],
+};
+const VAGA_ETAPAS = [['interesse', 'Interesse'], ['aplicada', 'Aplicada'], ['entrevista', 'Entrevista'], ['teste', 'Teste/Case'], ['proposta', 'Proposta'], ['encerrada', 'Encerrada']];
+F.vaga[2].options = VAGA_ETAPAS;
+const FREELA_LBL = Object.fromEntries(F.freela[2].options);
+const fAtividade = () => [
+  { k: 'nome', label: 'Atividade / serviço', req: 1, wide: 1, ph: 'Ex.: Edição de Reels para marcas' },
+  { k: 'tipo', label: 'Onde se aplica', type: 'select', options: [['ambos', 'Vasta e freela'], ['vasta', 'Vasta'], ['freela', 'Freela'], ['vagas', 'Para vagas']] },
+  { k: 'valorHora', label: 'Valor de referência (R$/hora)', type: 'number', step: 'any' },
+  { k: 'habs', label: 'Habilidades usadas', type: 'checks', options: S.habilidades.map(h => [h.id, h.nome]), wide: 1, vazio: 'Cadastre habilidades primeiro' },
+  { k: 'descricao', label: 'Descrição', type: 'textarea', wide: 1 },
+];
+
+// ================= ações (cliques) =================
+let agendaRef = hoje(), pontoMes = hoje().slice(0, 7), feiraTab = 'estoque';
+const A = {
+  baterPonto,
+  syncGoogle: () => syncGoogle(true),
+  ativarPush: () => ativarPush(),
+  desativarPush: () => desativarPush(),
+  testarPush: () => testarPush(),
+  verGoogle: ({ id }) => verGoogle(id),
+  novoEvento: ({ d, cat }) => crud('eventos', 'compromisso', F.evento, null, { data: d || hoje(), cat: cat || 'pessoal', rec: 'nenhuma' }),
+  editEvento: ({ id }) => { const e = byId('eventos', id); crud('eventos', 'compromisso', F.evento, e, {}, { nota: e.rec !== 'nenhuma' ? 'Este compromisso se repete: a alteração vale para todas as ocorrências.' : '' }); },
+  semana: ({ n }) => { agendaRef = n === '0' ? hoje() : iso(addDays(parseISO(agendaRef), 7 * +n)); render(); },
+  mes: ({ n }) => { const [y, m] = pontoMes.split('-').map(Number); const d = new Date(y, m - 1 + +n, 1); pontoMes = n === '0' ? hoje().slice(0, 7) : `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; render(); },
+  csvPonto: () => {
+    const linhas = [['Data', 'Dia', 'Entrada', 'Saída almoço', 'Volta almoço', 'Saída', 'Tipo', 'Trabalhado', 'Saldo']];
+    for (const d of diasDoMes(pontoMes)) { const c = calcDia(d); linhas.push([d, DIAS[parseISO(d).getDay()], c.r.e1 || '', c.r.s1 || '', c.r.e2 || '', c.r.s2 || '', c.tipo, minToHHMM(c.trab), minToHHMM(c.saldo)]); }
+    arquivo(`Ponto ${pontoMes} (CSV)`, `ponto-${pontoMes}.csv`, linhas.map(l => l.join(';')).join('\n'), 'text/csv');
+  },
+  novaTarefa: () => crud('tarefas', 'tarefa', F.tarefa, null, { rec: 'nenhuma', cat: 'casa' }),
+  editTarefa: ({ id }) => crud('tarefas', 'tarefa', F.tarefa, byId('tarefas', id)),
+  toggleTarefa: ({ id }) => { const t = byId('tarefas', id); t.feitaEm = feita(t) ? null : hoje(); save(); render(); },
+  feiraTab: ({ t }) => { feiraTab = t; render(); },
+  novoItem: () => crud('itens', 'item da feira', F.item, null, { unid: 'un', cat: 'Mercearia', estoque: 0 }, { antes: o => { o.estoqueData = hoje(); } }),
+  editItem: ({ id }) => {
+    const it = byId('itens', id), inf = itemInfo(it);
+    const atual = Math.round(inf.atual * 100) / 100;
+    openForm({
+      title: 'Editar ' + it.nome, fields: F.item, value: { ...it, estoque: atual },
+      nota: inf.porDia ? `Consumo estimado: ${num(inf.porDia * 7, 2)} ${esc(it.unid)}/semana (${inf.fonte}). O estoque mostrado já desconta o consumo desde a última contagem; corrija se estiver diferente.` : '',
+      onSave: o => { if (o.estoque !== atual) o.estoqueData = hoje(); else { o.estoque = it.estoque; } Object.assign(it, o); },
+      onDelete: () => { S.itens = S.itens.filter(x => x !== it); S.compras = S.compras.filter(c => c.itemId !== it.id); },
+    });
+  },
+  toggleComprar: ({ id }) => { const it = byId('itens', id); it.comprar = !it.comprar; save(); render(); },
+  novaFeira: () => abrirFeira(),
+  copiarLista: () => {
+    const linhas = S.itens.map(it => [it, itemInfo(it)]).filter(([it, i]) => naLista(it, i)).map(([it, i]) => `- ${it.nome} (${num(i.sugerido, 2)} ${it.unid})`);
+    copiar(`🛒 Lista da feira (${fmtData(hoje(), { day: '2-digit', month: '2-digit' })})\n` + linhas.join('\n'));
+  },
+  apagarFeira: ({ k }) => {
+    confirmar('Apagar esta feira do histórico? O estoque não é alterado.', () => { S.compras = S.compras.filter(c => `${c.data}|${c.local || ''}` !== k); save(); render(); }, 'Apagar');
+  },
+  novaMusica: () => crud('musicas', 'música', F.musica, null, { status: 'aprender', instrumento: 'baixo', onde: 'igreja' }),
+  editMusica: ({ id }) => crud('musicas', 'música', F.musica, byId('musicas', id)),
+  novaHab: () => crud('habilidades', 'habilidade', F.habilidade, null),
+  editHab: ({ id }) => crud('habilidades', 'habilidade', F.habilidade, byId('habilidades', id)),
+  novaAtiv: () => crud('atividades', 'atividade', fAtividade(), null, { tipo: 'ambos' }),
+  editAtiv: ({ id }) => crud('atividades', 'atividade', fAtividade(), byId('atividades', id)),
+  copiarResumo: () => copiar(resumoProfissional()),
+  novoFreela: () => crud('freelas', 'freela', F.freela, null, { status: 'orcamento' }),
+  editFreela: ({ id }) => crud('freelas', 'freela', F.freela, byId('freelas', id)),
+  novaVaga: ({ s }) => crud('vagas', 'candidatura', F.vaga, null, { status: s || 'aplicada', data: hoje() }),
+  editVaga: ({ id }) => crud('vagas', 'candidatura', F.vaga, byId('vagas', id)),
+  moverVaga: ({ id, n }) => { const v = byId('vagas', id); const i = VAGA_ETAPAS.findIndex(e => e[0] === v.status); v.status = VAGA_ETAPAS[Math.max(0, Math.min(VAGA_ETAPAS.length - 1, i + +n))][0]; save(); render(); },
+  exportar: () => arquivo('Backup dos dados', `meu-dia-a-dia-backup-${hoje()}.json`, JSON.stringify(S), 'application/json'),
+  importar: () => {
+    const d = $('#dlg2');
+    d.innerHTML = `<form class="form"><h2>Importar backup</h2><label class="field wide"><span>Escolha o arquivo .json</span><input type="file" id="imp-file" accept=".json,application/json"></label><label class="field wide"><span>ou cole o texto do backup</span><textarea id="imp-txt" rows="6"></textarea></label><p class="wide muted small" style="margin:0">Isso substitui todos os dados atuais.</p><p class="wide neg small" id="imp-err" style="margin:0"></p><div class="form-actions"><span class="sp"></span><button type="button" class="btn" data-x>Cancelar</button><button class="btn primary">Importar</button></div></form>`;
+    d.querySelector('[data-x]').onclick = () => d.close();
+    d.querySelector('form').onsubmit = async e => {
+      e.preventDefault();
+      try {
+        const f = $('#imp-file').files[0];
+        const data = JSON.parse(f ? await f.text() : $('#imp-txt').value);
+        if (!data || typeof data !== 'object' || !data.settings) throw new Error('não parece um backup deste app');
+        try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e2) { /* segue só em memória */ }
+        S = data; carregarDe(data); d.close(); render(); toast('Backup restaurado');
+      } catch (err) { $('#imp-err').textContent = 'Não consegui ler o backup: ' + err.message; }
+    };
+    d.showModal();
+  },
+  apagarTudo: () => confirmar('Apagar TODOS os dados deste navegador? Faça um backup antes.', () => { try { localStorage.removeItem(KEY); } catch (e) { } S = null; carregarDe(null); save(); render(); toast('Dados apagados'); }, 'Apagar tudo'),
+  limparExemplos: () => confirmar('Remover todos os dados de exemplo? O que você cadastrou continua.', () => { limparExemplos(); save(); render(); toast('Exemplos removidos'); }, 'Remover exemplos'),
+  exemplos: () => { carregarExemplos(); save(); render(); toast('Exemplos carregados. Edite ou apague à vontade.'); },
+};
+// ações por mudança de campo
+const C = {
+  ponto: ({ d, k }, el) => {
+    const r = S.ponto[d] ||= {};
+    if (el.value) r[k] = el.value; else delete r[k];
+    if (!Object.keys(r).length || (Object.keys(r).length === 1 && r.tipo === 'normal')) delete S.ponto[d];
+    save(); atualizarLinhaPonto(d);
+  },
+};
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (!el || !A[el.dataset.act]) return;
+  if (el.tagName !== 'INPUT') e.preventDefault();
+  e.stopPropagation();
+  A[el.dataset.act](el.dataset, el);
+});
+document.addEventListener('change', e => {
+  const el = e.target.closest('[data-chg]');
+  if (el && C[el.dataset.chg]) C[el.dataset.chg](el.dataset, el);
+});
+function arquivo(titulo, nome, conteudo, tipo) {
+  const d = mostrarTexto(titulo, conteudo, `<button type="button" class="btn" data-dl>Baixar arquivo</button>`);
+  d.querySelector('[data-dl]').onclick = () => baixar(nome, conteudo, tipo);
+}
+function baixar(nome, conteudo, tipo) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + conteudo], { type: tipo }));
+  a.download = nome; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ================= telas =================
+const head = (titulo, sub, botoes = '') => `<div class="head"><div><h1>${titulo}</h1>${sub ? `<div class="muted">${sub}</div>` : ''}</div><div class="btns">${botoes}</div></div>`;
+const vazio = txt => `<div class="empty">${txt}</div>`;
+
+function cardPontoHoje() {
+  const d = hoje(), c = calcDia(d), r = c.r, prev = previsaoSaida(d), st = saldoTotal();
+  return `<div class="card"><div class="card-h"><h3>⏱️ Ponto de hoje</h3><a href="#/ponto" class="small">ver mês</a></div>
+  <div class="punches">${MARCAS.map(([k, l]) => `<div class="punch ${r[k] ? 'on' : ''}"><span>${l}</span><b>${r[k] || '--:--'}</b></div>`).join('')}</div>
+  <div class="row-stats"><div><span class="muted small">Trabalhado</span><b>${fmtDur(trabAteAgora(d))}</b></div>
+  <div><span class="muted small">Saída prevista</span><b>${prev || '—'}</b></div>
+  <div><span class="muted small">Banco de horas</span><b class="${cls(st)}">${fmtSaldo(st)}</b></div></div>
+  ${c.esperado || c.r.e1 ? `<button class="btn primary block" data-act="baterPonto">Bater ponto agora</button>` : `<p class="muted small">Hoje não é dia de expediente.</p>`}</div>`;
+}
+function cardEquilibrio(inicio) {
+  const h = horasPorCat(inicio), metas = S.settings.metas || {};
+  const cats = Object.keys(CATS).filter(k => metas[k] > 0);
+  if (!cats.length) return `<p class="muted small">Defina metas semanais em Ajustes.</p>`;
+  return cats.map(k => {
+    const feito = (h[k] || 0) / 60, meta = +metas[k], p = Math.min(100, feito / meta * 100);
+    return `<div class="meta-row"><div class="lbl"><span><span class="dot" style="background:${CATS[k].c}"></span>${CATS[k].n}</span><span class="muted">${num(feito)}h / ${num(meta)}h</span></div><div class="bar"><i style="width:${p}%;background:${CATS[k].c}"></i></div></div>`;
+  }).join('');
+}
+
+const V = {};
+V.painel = () => {
+  const d = hoje(), h = new Date().getHours();
+  const saud = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+  const evs = ocorrencias(d);
+  const pend = S.tarefas.filter(t => !feita(t)).sort((a, b) => (a.data || '9').localeCompare(b.data || '9')).slice(0, 8);
+  const infos = S.itens.map(it => [it, itemInfo(it)]).filter(([it, i]) => naLista(it, i));
+  const prox = [];
+  for (let i = 1; i <= 7; i++) { const dd = iso(addDays(new Date(), i)); for (const e of ocorrencias(dd)) if (['igreja', 'banda', 'freela', 'vagas'].includes(e.cat)) prox.push([dd, e.inicio, e.titulo, CATS[e.cat].c]); }
+  for (const f of S.freelas) if (['orcamento', 'andamento'].includes(f.status) && f.prazo && f.prazo >= d && diffDias(d, f.prazo) <= 7) prox.push([f.prazo, '', `Entrega: ${f.projeto}`, CATS.freela.c]);
+  for (const v of S.vagas) if (v.proximoData && v.proximoData >= d && diffDias(d, v.proximoData) <= 7 && v.status !== 'encerrada') prox.push([v.proximoData, '', `${v.proximo || 'Próximo passo'}: ${v.empresa}`, CATS.vagas.c]);
+  prox.sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]));
+  const semDados = !S.eventos.length && !S.itens.length && !S.tarefas.length && !S.habilidades.length;
+  return head(`${saud}, ${esc(S.settings.nome)}!`, fmtData(d, { weekday: 'long', day: 'numeric', month: 'long' }),
+    `<button class="btn" data-act="novoEvento">+ Compromisso</button><button class="btn" data-act="novaTarefa">+ Tarefa</button>`) +
+    (temExemplos() ? `<div class="banner section"><div><b>Você está vendo dados de exemplo.</b> <span class="muted">Explore à vontade. Quando quiser começar com os seus, remova os exemplos.</span></div><div class="btns"><button class="btn primary" data-act="limparExemplos">Remover exemplos</button><a class="btn" href="#/config">Configurar minha jornada</a></div></div>` :
+    semDados ? `<div class="banner section"><div><b>Tudo vazio por aqui.</b> <span class="muted">Carregue uma rotina de exemplo para ver tudo funcionando, ou comece pelos Ajustes.</span></div><div class="btns"><button class="btn primary" data-act="exemplos">Carregar exemplos</button><a class="btn" href="#/config">Configurar minha jornada</a></div></div>` : '') +
+    `<div class="grid">
+    ${cardPontoHoje()}
+    <div class="card"><div class="card-h"><h3>📅 Hoje</h3><a href="#/agenda" class="small">semana</a></div>${gBarHTML()}${evs.map(e => evHTML(e, d)).join('') || vazio('Nada na agenda hoje')}</div>
+    <div class="card"><div class="card-h"><h3>✅ Tarefas pendentes</h3><a href="#/tarefas" class="small">todas</a></div><div class="list">${pend.map(tarefaHTML).join('') || vazio('Tudo em dia 🎉')}</div></div>
+    <div class="card"><div class="card-h"><h3>🛒 Feira</h3><a href="#/feira" class="small">abrir</a></div>
+      <div class="row-stats" style="margin:0 0 10px"><div><span class="muted small">Gasto no mês</span><b>${brl(gastoMes(d.slice(0, 7)))}</b></div><div><span class="muted small">Precisa comprar</span><b>${infos.length} ${infos.length === 1 ? "item" : "itens"}</b></div></div>
+      <div class="list">${infos.slice(0, 6).map(([it, i]) => `<div class="li" data-act="editItem" data-id="${it.id}"><div class="grow"><div class="t">${esc(it.nome)}</div><div class="small muted">${i.acabaEm ? 'acaba ' + fmtData(i.acabaEm) : 'sem previsão'}</div></div><span class="tag ${i.status}">${it.comprar && i.status === 'ok' ? 'Na lista' : STATUS_LBL[i.status]}</span></div>`).join('') || vazio('Despensa abastecida')}</div></div>
+    <div class="card"><div class="card-h"><h3>🔜 Próximos 7 dias</h3></div><div class="list">${prox.slice(0, 8).map(([dd, hr, t, c]) => `<div class="li"><span class="dot" style="background:${c}"></span><div class="grow"><div class="t">${esc(t)}</div><div class="small muted">${fmtData(dd)}${hr ? ' · ' + hr : ''}</div></div></div>`).join('') || vazio('Sem ensaios, entregas ou entrevistas')}</div></div>
+    <div class="card"><div class="card-h"><h3>⚖️ Equilíbrio da semana</h3></div>${cardEquilibrio(inicioSemana(new Date()))}</div>
+  </div>`;
+};
+
+V.agenda = () => {
+  const ini = inicioSemana(parseISO(agendaRef)), fim = addDays(ini, 6);
+  const dias = [...Array(7)].map((_, i) => iso(addDays(ini, i)));
+  const h = horasPorCat(ini);
+  return head('Agenda', `Semana de ${fmtData(iso(ini), { day: '2-digit', month: '2-digit' })} a ${fmtData(iso(fim), { day: '2-digit', month: '2-digit' })}`,
+    `<button class="btn" data-act="semana" data-n="-1">‹</button><button class="btn" data-act="semana" data-n="0">Hoje</button><button class="btn" data-act="semana" data-n="1">›</button><button class="btn primary" data-act="novoEvento">+ Compromisso</button>`) +
+    gBarHTML() + `<div class="week section">${dias.map(d => `<div class="day ${d === hoje() ? 'today' : ''}"><div class="day-h"><span>${fmtData(d)}</span><button class="mini" data-act="novoEvento" data-d="${d}" title="Adicionar">+</button></div>${ocorrencias(d).map(e => evHTML(e, d)).join('') || '<p class="muted small">Livre</p>'}</div>`).join('')}</div>
+    <div class="grid"><div class="card"><h3 style="margin-bottom:10px">Horas da semana por área</h3>${Object.entries(h).filter(([, m]) => m > 0).sort((a, b) => b[1] - a[1]).map(([k, m]) => `<div class="meta-row"><div class="lbl"><span><span class="dot" style="background:${CATS[k]?.c}"></span>${CATS[k]?.n || k}</span><b>${fmtDur(m)}</b></div></div>`).join('') || vazio('Sem compromissos com horário')}</div>
+    <div class="card"><h3 style="margin-bottom:10px">Metas da semana</h3>${cardEquilibrio(ini)}</div></div>
+    <p class="muted small">Dica: cadastre sua rotina fixa (sair para o trabalho, almoço, Pilates, culto) como compromisso que se repete toda semana.</p>`;
+};
+
+function diasDoMes(ym) {
+  const [y, m] = ym.split('-').map(Number), n = new Date(y, m, 0).getDate();
+  return [...Array(n)].map((_, i) => `${ym}-${pad(i + 1)}`);
+}
+function resumoPonto() {
+  const ds = diasDoMes(pontoMes);
+  let trab = 0, esp = 0, saldo = 0, dias = 0;
+  for (const d of ds) { const c = calcDia(d); if (!c.completo) continue; trab += c.trab; esp += c.esperado; saldo += c.saldo; dias++; }
+  const st = saldoTotal();
+  return `<div class="stat"><span>Dias fechados no mês</span><b>${dias}</b></div><div class="stat"><span>Trabalhado no mês</span><b>${fmtDur(trab)}</b></div><div class="stat"><span>Esperado no mês</span><b>${fmtDur(esp)}</b></div><div class="stat"><span>Saldo do mês</span><b class="${cls(saldo)}">${fmtSaldo(saldo)}</b></div><div class="stat"><span>Banco de horas total</span><b class="${cls(st)}">${fmtSaldo(st)}</b></div>`;
+}
+function atualizarLinhaPonto(d) {
+  const c = calcDia(d), tr = document.getElementById('pt-' + d);
+  if (tr) {
+    tr.querySelector('.trab').textContent = c.trab || c.r.e1 ? fmtDur(c.trab) : '';
+    const s = tr.querySelector('.saldo');
+    s.textContent = c.completo ? fmtSaldo(c.saldo) : (c.r.e1 ? 'em aberto' : '');
+    s.className = 'saldo ' + (c.completo ? cls(c.saldo) : 'muted');
+  }
+  const r = $('#pt-resumo'); if (r) r.innerHTML = resumoPonto();
+}
+V.ponto = () => {
+  const [y, m] = pontoMes.split('-').map(Number);
+  const nomeMes = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  const tipos = [['normal', 'Normal'], ['folga', 'Folga'], ['feriado', 'Feriado'], ['atestado', 'Atestado/abonado'], ['falta', 'Falta']];
+  const linhas = diasDoMes(pontoMes).map(d => {
+    const c = calcDia(d), wd = parseISO(d).getDay();
+    return `<tr id="pt-${d}" class="${S.settings.jornada[wd] ? '' : 'wkend'} ${d === hoje() ? 'today' : ''}"><td>${pad(d.slice(8))} ${DIAS[wd]}</td>
+    ${MARCAS.map(([k]) => `<td><input type="time" value="${c.r[k] || ''}" data-chg="ponto" data-d="${d}" data-k="${k}"></td>`).join('')}
+    <td><select data-chg="ponto" data-d="${d}" data-k="tipo">${tipos.map(([v, l]) => `<option value="${v}"${c.tipo === v ? ' selected' : ''}>${l}</option>`).join('')}</select></td>
+    <td class="trab">${c.trab || c.r.e1 ? fmtDur(c.trab) : ''}</td><td class="saldo ${c.completo ? cls(c.saldo) : 'muted'}">${c.completo ? fmtSaldo(c.saldo) : (c.r.e1 ? 'em aberto' : '')}</td></tr>`;
+  }).join('');
+  return head('Ponto e banco de horas', `<span style="text-transform:capitalize">${nomeMes}</span> · jornada e tolerância em Ajustes`,
+    `<button class="btn" data-act="mes" data-n="-1">‹</button><button class="btn" data-act="mes" data-n="0">Mês atual</button><button class="btn" data-act="mes" data-n="1">›</button><button class="btn" data-act="csvPonto">Exportar CSV</button><button class="btn primary" data-act="baterPonto">Bater ponto agora</button>`) +
+    `<div class="grid section">${cardPontoHoje()}</div>
+    <div class="stats" id="pt-resumo">${resumoPonto()}</div>
+    <div class="table-wrap"><table><thead><tr><th>Dia</th><th>Entrada</th><th>Saída almoço</th><th>Volta almoço</th><th>Saída</th><th>Tipo</th><th>Trabalhado</th><th>Saldo</th></tr></thead><tbody>${linhas}</tbody></table></div>
+    <p class="muted small">Só entram no banco de horas os dias fechados (com saída registrada, ou marcados como folga, feriado, atestado ou falta). Diferenças de até ${S.settings.tolerancia} min no dia são desconsideradas, como no ponto da CLT.</p>`;
+};
+
+V.tarefas = () => {
+  const grupos = [['diaria', 'Todo dia'], ['semanal', 'Toda semana'], ['mensal', 'Todo mês'], ['nenhuma', 'Avulsas']];
+  const avulsasFeitas = S.tarefas.filter(t => (t.rec || 'nenhuma') === 'nenhuma' && feita(t));
+  return head('Tarefas', 'Casa, pessoal e o que mais precisar lembrar', `<button class="btn primary" data-act="novaTarefa">+ Tarefa</button>`) +
+    `<div class="grid">${grupos.map(([g, l]) => {
+      const ts = S.tarefas.filter(t => (t.rec || 'nenhuma') === g && !(g === 'nenhuma' && feita(t)));
+      return `<div class="card"><h3 style="margin-bottom:10px">${l}</h3><div class="list">${ts.map(tarefaHTML).join('') || vazio('Nenhuma')}</div></div>`;
+    }).join('')}
+    ${avulsasFeitas.length ? `<div class="card"><h3 style="margin-bottom:10px">Concluídas</h3><div class="list">${avulsasFeitas.map(tarefaHTML).join('')}</div></div>` : ''}</div>`;
+};
+
+function abrirFeira() {
+  if (!S.itens.length) return toast('Cadastre os itens da feira primeiro.');
+  const lista = S.itens.map(it => [it, itemInfo(it)]).sort((a, b) => (naLista(b[0], b[1]) - naLista(a[0], a[1])) || a[0].nome.localeCompare(b[0].nome));
+  dlg.innerHTML = `<form class="form"><h2>Registrar feira</h2>
+    <label class="field"><span>Data</span><input type="date" name="data" value="${hoje()}" required></label>
+    <label class="field"><span>Local</span><input name="local" placeholder="Ex.: Feira de sábado, Atacadão" value="${esc(S.compras.at(-1)?.local || '')}"></label>
+    <div class="wide table-wrap"><table class="feira-tbl"><thead><tr><th>Item</th><th>Qtd comprada</th><th>Valor total (R$)</th></tr></thead><tbody>
+    ${lista.map(([it, i]) => `<tr><td>${esc(it.nome)} ${naLista(it, i) ? '<span class="tag acabando">lista</span>' : ''}<div class="small muted">${it.unid}${i.precoUnit ? ' · último ' + brl(i.precoUnit) + '/' + it.unid : ''}</div></td><td><input type="number" step="any" min="0" name="q_${it.id}" placeholder="${naLista(it, i) ? num(i.sugerido, 2) : ''}"></td><td><input type="number" step="any" min="0" name="v_${it.id}"></td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="wide muted small" style="margin:0">Preencha só o que comprou. O estoque é somado automaticamente e o item sai da lista. Total: <b id="feira-total">R$ 0,00</b></p>
+    <div class="form-actions"><span class="sp"></span><button type="button" class="btn ghost" data-cancel>Cancelar</button><button class="btn primary">Salvar feira</button></div></form>`;
+  const form = dlg.querySelector('form');
+  form.oninput = () => { let t = 0; for (const it of S.itens) t += +form.elements['v_' + it.id].value || 0; $('#feira-total').textContent = brl(t); };
+  form.onsubmit = e => {
+    e.preventDefault();
+    const data = form.elements.data.value, local = form.elements.local.value.trim();
+    let n = 0;
+    for (const [it, i] of lista) {
+      const q = +form.elements['q_' + it.id].value || 0, v = +form.elements['v_' + it.id].value || 0;
+      if (q <= 0 && v <= 0) continue;
+      S.compras.push({ id: uid(), data, local, itemId: it.id, qtd: q, valor: v });
+      it.estoque = Math.round((i.atual + q) * 1000) / 1000; it.estoqueData = hoje(); it.comprar = false; n++;
+    }
+    if (!n) return toast('Nenhum item preenchido.');
+    save(); dlg.close(); render(); toast(`Feira registrada com ${n} itens`);
+  };
+  dlg.querySelector('[data-cancel]').onclick = () => dlg.close();
+  dlg.showModal();
+}
+V.feira = () => {
+  const infos = S.itens.map(it => [it, itemInfo(it)]);
+  const ordem = { falta: 0, acabando: 1, ok: 2 };
+  const d = hoje(), ym = d.slice(0, 7);
+  const pm = new Date(); pm.setDate(1); pm.setMonth(pm.getMonth() - 1);
+  const tabs = [['estoque', 'Estoque e previsão'], ['lista', 'Lista de compras'], ['gastos', 'Gastos']];
+  let corpo = '';
+  if (feiraTab === 'estoque') {
+    infos.sort((a, b) => ordem[a[1].status] - ordem[b[1].status] || (a[1].diasRest ?? 1e9) - (b[1].diasRest ?? 1e9));
+    corpo = S.itens.length ? `<div class="table-wrap"><table><thead><tr><th>Item</th><th>Em casa (estimado)</th><th>Consumo/semana</th><th>Acaba em</th><th>Último preço</th><th>Status</th><th>Lista</th></tr></thead><tbody>
+    ${infos.map(([it, i]) => `<tr style="cursor:pointer" data-act="editItem" data-id="${it.id}"><td><b>${esc(it.nome)}</b><div class="small muted">${esc(it.cat)}</div></td><td>${num(i.atual, 2)} ${esc(it.unid)}</td><td>${i.porDia ? num(i.porDia * 7, 2) + ' ' + esc(it.unid) : '<span class="muted small">compre 2x para estimar</span>'}</td><td>${i.acabaEm ? fmtData(i.acabaEm) + `<div class="small muted">${Math.floor(i.diasRest)} dias</div>` : '—'}</td><td>${i.precoUnit ? brl(i.precoUnit) + '/' + esc(it.unid) : '—'}</td><td><span class="tag ${i.status}">${STATUS_LBL[i.status]}</span></td><td><input type="checkbox" ${it.comprar ? 'checked' : ''} data-act="toggleComprar" data-id="${it.id}" title="Colocar na lista"></td></tr>`).join('')}
+    </tbody></table></div><p class="muted small">O consumo é calculado sozinho a partir do intervalo entre suas compras (ou do valor que você informar). Clique num item para corrigir o estoque quando conferir a despensa.</p>` : vazio('Cadastre os itens que você costuma comprar na feira.');
+  } else if (feiraTab === 'lista') {
+    const l = infos.filter(([it, i]) => naLista(it, i)).sort((a, b) => a[0].cat.localeCompare(b[0].cat) || a[0].nome.localeCompare(b[0].nome));
+    const est = l.reduce((s, [, i]) => s + (i.precoUnit ? i.precoUnit * i.sugerido : 0), 0);
+    corpo = `<div class="stats"><div class="stat"><span>Itens na lista</span><b>${l.length}</b></div><div class="stat"><span>Custo estimado</span><b>${brl(est)}</b></div></div>
+    <div class="btns section"><button class="btn" data-act="copiarLista">Copiar lista (WhatsApp)</button><button class="btn primary" data-act="novaFeira">Registrar feira</button></div>
+    <div class="list">${l.map(([it, i]) => `<div class="li" data-act="editItem" data-id="${it.id}"><div class="grow"><div class="t">${esc(it.nome)}</div><div class="small muted">${esc(it.cat)} · comprar ~${num(i.sugerido, 2)} ${esc(it.unid)}${i.precoUnit ? ' · ~' + brl(i.precoUnit * i.sugerido) : ''}</div></div><span class="tag ${i.status}">${it.comprar && i.status === 'ok' ? 'Manual' : STATUS_LBL[i.status]}</span></div>`).join('') || vazio('Nada para comprar agora')}</div>`;
+  } else {
+    const semanas = [...Array(8)].map((_, k) => { const ini = inicioSemana(addDays(new Date(), -7 * (7 - k))); return [iso(ini), iso(addDays(ini, 6))]; });
+    const vals = semanas.map(([a, b]) => gastoEntre(a, b)), max = Math.max(...vals, 1);
+    const media = vals.reduce((s, v) => s + v, 0) / 8;
+    const porCat = {}; for (const c of S.compras.filter(c => c.data.startsWith(ym))) { const it = byId('itens', c.itemId); const k = it?.cat || 'Outros'; porCat[k] = (porCat[k] || 0) + (+c.valor || 0); }
+    const grupos = {}; for (const c of S.compras) { const k = `${c.data}|${c.local || ''}`; (grupos[k] ||= []).push(c); }
+    const hist = Object.entries(grupos).sort((a, b) => b[0].localeCompare(a[0]));
+    corpo = `<div class="stats"><div class="stat"><span>Este mês</span><b>${brl(gastoMes(ym))}</b></div><div class="stat"><span>Mês passado</span><b>${brl(gastoMes(iso(pm).slice(0, 7)))}</b></div><div class="stat"><span>Média semanal (8 sem.)</span><b>${brl(media)}</b></div><div class="stat"><span>Projeção do mês</span><b>${brl(media * 4.33)}</b></div></div>
+    <div class="grid section"><div class="card"><h3>Gasto por semana</h3><div class="chart">${vals.map((v, k) => `<div class="c"><em>${v ? Math.round(v) : ''}</em><i style="height:${v / max * 100}%"></i><small>${fmtData(semanas[k][0], { day: '2-digit', month: '2-digit' })}</small></div>`).join('')}</div></div>
+    <div class="card"><h3 style="margin-bottom:10px">Por seção (este mês)</h3>${Object.entries(porCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="meta-row"><div class="lbl"><span>${esc(k)}</span><b>${brl(v)}</b></div><div class="bar"><i style="width:${v / gastoMes(ym) * 100}%"></i></div></div>`).join('') || vazio('Sem compras este mês')}</div></div>
+    <h2>Histórico de feiras</h2><div class="list">${hist.map(([k, cs]) => `<div class="li" style="cursor:default"><div class="grow"><div class="t">${fmtData(cs[0].data)}${cs[0].local ? ' · ' + esc(cs[0].local) : ''} · ${brl(cs.reduce((s, c) => s + (+c.valor || 0), 0))}</div><div class="small muted">${cs.map(c => `${esc(byId('itens', c.itemId)?.nome || '?')} (${num(c.qtd, 2)})`).join(', ')}</div></div><button class="mini" data-act="apagarFeira" data-k="${esc(k)}">Apagar</button></div>`).join('') || vazio('Nenhuma feira registrada')}</div>`;
+  }
+  return head('Feira', 'Estoque, previsão de quando acaba e quanto você gasta', `<button class="btn" data-act="novoItem">+ Item</button><button class="btn primary" data-act="novaFeira">Registrar feira</button>`) +
+    `<div class="tabs">${tabs.map(([k, l]) => `<button class="btn ${feiraTab === k ? 'on' : ''}" data-act="feiraTab" data-t="${k}">${l}</button>`).join('')}</div>${corpo}`;
+};
+
+V.musica = () => {
+  const d = hoje(), prox = [];
+  for (let i = 0; i <= 30; i++) { const dd = iso(addDays(new Date(), i)); for (const e of ocorrencias(dd)) if (e.cat === 'igreja' || e.cat === 'banda') prox.push([dd, e]); }
+  const st = [['aprender', 'Preciso aprender'], ['ensaiando', 'Ensaiando'], ['pronta', 'Prontas']];
+  const inst = { baixo: '🎸 Baixo', teclado: '🎹 Teclado', ambos: '🎸🎹' };
+  return head('Música', 'Igreja, banda e repertório', `<button class="btn" data-act="novoEvento" data-cat="igreja">+ Compromisso</button><button class="btn primary" data-act="novaMusica">+ Música</button>`) +
+    `<div class="grid"><div class="card"><h3 style="margin-bottom:10px">Próximos 30 dias</h3><div class="list">${prox.slice(0, 12).map(([dd, e]) => `<div class="li" ${evAct(e)}><span class="dot" style="background:${CATS[e.cat].c}"></span><div class="grow"><div class="t">${esc(e.titulo)}</div><div class="small muted">${fmtData(dd)}${e.inicio ? ' · ' + e.inicio : ''}${e.local ? ' · ' + esc(e.local) : ''}</div></div><span class="tag">${CATS[e.cat].n.split(' ')[0]}</span></div>`).join('') || vazio('Sem cultos, ensaios ou shows. Use a categoria Igreja ou Banda na agenda.')}</div></div>
+    ${st.map(([k, l]) => { const ms = S.musicas.filter(m => (m.status || 'aprender') === k); return `<div class="card"><h3 style="margin-bottom:10px">${l} <span class="muted">(${ms.length})</span></h3><div class="list">${ms.map(m => `<div class="li" data-act="editMusica" data-id="${m.id}"><div class="grow"><div class="t">${esc(m.titulo)}</div><div class="small muted">${[m.artista, m.tom ? 'Tom ' + m.tom : '', m.bpm ? m.bpm + ' bpm' : '', inst[m.instrumento], m.onde === 'ambos' ? 'Igreja e banda' : m.onde === 'banda' ? 'Banda' : 'Igreja'].filter(Boolean).map(esc).join(' · ')}</div></div>${m.link ? `<a class="mini" href="${esc(m.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">abrir</a>` : ''}</div>`).join('') || vazio('Nenhuma')}</div></div>`; }).join('')}</div>`;
+};
+
+const NIVEL = ['', 'Iniciante', 'Básico', 'Intermediário', 'Avançado', 'Especialista'];
+function resumoProfissional() {
+  const hs = [...S.habilidades].sort((a, b) => b.nivel - a.nivel);
+  const areas = {}; for (const h of hs) (areas[h.area || 'Geral'] ||= []).push(h);
+  let t = `${S.settings.nome}: resumo de habilidades\n\n`;
+  for (const [a, l] of Object.entries(areas)) t += `${a}\n` + l.map(h => `• ${h.nome} (${NIVEL[h.nivel] || ''}${h.anos ? `, ${num(h.anos)} anos` : ''})${h.ferramentas ? ': ' + h.ferramentas : ''}`).join('\n') + '\n\n';
+  if (S.atividades.length) t += `O que posso fazer\n` + S.atividades.map(a => `• ${a.nome}${a.descricao ? ': ' + a.descricao : ''}`).join('\n');
+  return t.trim();
+}
+V.habilidades = () => {
+  const areas = {}; for (const h of S.habilidades) (areas[h.area || 'Geral'] ||= []).push(h);
+  const tipoLbl = { ambos: 'Vasta e freela', vasta: 'Vasta', freela: 'Freela', vagas: 'Vagas' };
+  return head('Habilidades', 'O que você sabe fazer e o que pode oferecer', `<button class="btn" data-act="novaAtiv">+ Atividade</button><button class="btn primary" data-act="novaHab">+ Habilidade</button>`) +
+    `<div class="grid section">${Object.entries(areas).map(([a, l]) => `<div class="card"><h3 style="margin-bottom:10px">${esc(a)}</h3><div class="list">${l.sort((x, y) => y.nivel - x.nivel).map(h => `<div class="li" data-act="editHab" data-id="${h.id}"><div class="grow"><div class="t">${esc(h.nome)}</div><div class="small muted">${NIVEL[h.nivel] || ''}${h.anos ? ' · ' + num(h.anos) + ' anos' : ''}${h.ferramentas ? ' · ' + esc(h.ferramentas) : ''}</div><div class="bar" style="margin-top:5px"><i style="width:${(h.nivel || 0) * 20}%"></i></div></div></div>`).join('')}</div></div>`).join('') || vazio('Cadastre suas habilidades profissionais (edição, design, música, ferramentas...)')}</div>
+    <h2>Atividades que posso desempenhar</h2>
+    <div class="grid section">${S.atividades.map(a => `<div class="card" style="cursor:pointer" data-act="editAtiv" data-id="${a.id}"><div class="card-h"><h3>${esc(a.nome)}</h3><span class="tag">${tipoLbl[a.tipo] || ''}</span></div><div class="small muted">${esc(a.descricao || '')}</div><div class="small" style="margin-top:6px">${(a.habs || []).map(id => byId('habilidades', id)?.nome).filter(Boolean).map(n => `<span class="tag">${esc(n)}</span>`).join(' ')}</div>${a.valorHora ? `<div style="margin-top:6px"><b>${brl(a.valorHora)}</b><span class="muted small">/hora</span></div>` : ''}</div>`).join('') || vazio('Liste serviços que você pode fazer (ex.: edição de Reels, carrosséis, aulas de baixo) e ligue às habilidades')}</div>
+    <div class="card"><div class="card-h"><h3>Resumo para currículo e propostas</h3><button class="btn sm" data-act="copiarResumo">Copiar</button></div><pre class="resumo">${esc(resumoProfissional())}</pre></div>`;
+};
+
+V.freela = () => {
+  const d = hoje(), ym = d.slice(0, 7);
+  const aReceber = S.freelas.filter(f => ['andamento', 'entregue'].includes(f.status)).reduce((s, f) => s + (+f.valor || 0), 0);
+  const recebMes = S.freelas.filter(f => f.status === 'pago' && (f.pagoEm || '').startsWith(ym)).reduce((s, f) => s + (+f.valor || 0), 0);
+  const recebAno = S.freelas.filter(f => f.status === 'pago' && (f.pagoEm || '').startsWith(d.slice(0, 4))).reduce((s, f) => s + (+f.valor || 0), 0);
+  const cols = Object.entries(FREELA_LBL);
+  return head('Freelas', 'Trabalhos fora da Vasta', `<button class="btn primary" data-act="novoFreela">+ Freela</button>`) +
+    `<div class="stats"><div class="stat"><span>Em andamento</span><b>${S.freelas.filter(f => f.status === 'andamento').length}</b></div><div class="stat"><span>A receber</span><b>${brl(aReceber)}</b></div><div class="stat"><span>Recebido no mês</span><b class="pos">${brl(recebMes)}</b></div><div class="stat"><span>Recebido no ano</span><b>${brl(recebAno)}</b></div></div>
+    <div class="cols">${cols.map(([k, l]) => { const fs = S.freelas.filter(f => f.status === k); return `<div class="col"><h3>${l}<span class="muted">${fs.length}</span></h3>${fs.map(f => { const atras = f.prazo && f.prazo < d && ['orcamento', 'andamento'].includes(k); return `<div class="kcard" data-act="editFreela" data-id="${f.id}"><b>${esc(f.projeto)}</b><div class="small muted">${esc(f.cliente || '')}</div><div class="small">${f.valor ? brl(f.valor) : ''}${f.prazo ? ` · <span class="${atras ? 'neg' : ''}">prazo ${fmtData(f.prazo)}</span>` : ''}</div>${f.horasGastas && f.valor ? `<div class="small muted">${brl(f.valor / f.horasGastas)}/hora real</div>` : ''}</div>`; }).join('')}</div>`; }).join('')}</div>`;
+};
+
+V.vagas = () => {
+  const ativas = S.vagas.filter(v => v.status !== 'encerrada');
+  return head('Vagas', 'Candidaturas e processos seletivos', `<button class="btn primary" data-act="novaVaga">+ Candidatura</button>`) +
+    `<div class="stats"><div class="stat"><span>Processos ativos</span><b>${ativas.length}</b></div><div class="stat"><span>Aplicadas este mês</span><b>${S.vagas.filter(v => (v.data || '').startsWith(hoje().slice(0, 7))).length}</b></div><div class="stat"><span>Em entrevista/teste</span><b>${S.vagas.filter(v => ['entrevista', 'teste'].includes(v.status)).length}</b></div></div>
+    <div class="cols">${VAGA_ETAPAS.map(([k, l], idx) => { const vs = S.vagas.filter(v => v.status === k); return `<div class="col"><h3>${l}<button class="mini" data-act="novaVaga" data-s="${k}">+</button></h3>${vs.map(v => `<div class="kcard" data-act="editVaga" data-id="${v.id}"><b>${esc(v.cargo)}</b><div class="small muted">${esc(v.empresa)}${v.salario ? ' · ' + esc(v.salario) : ''}</div>${v.proximo ? `<div class="small">➜ ${esc(v.proximo)}${v.proximoData ? ' · ' + fmtData(v.proximoData) : ''}</div>` : ''}<div class="acts">${idx > 0 ? `<button class="mini" data-act="moverVaga" data-id="${v.id}" data-n="-1">‹</button>` : '<span></span>'}${v.link ? `<a class="mini" href="${esc(v.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">vaga</a>` : ''}${idx < VAGA_ETAPAS.length - 1 ? `<button class="mini" data-act="moverVaga" data-id="${v.id}" data-n="1">›</button>` : ''}</div></div>`).join('')}</div>`; }).join('')}</div>`;
+};
+
+V.config = () => {
+  const s = S.settings;
+  return head('Ajustes', 'Jornada, metas e backup') +
+    `<form class="card section" id="cfg"><div class="form" style="padding:0">
+    <label class="field"><span>Seu nome</span><input name="nome" value="${esc(s.nome)}"></label>
+    <label class="field"><span>Saldo inicial do banco de horas (hh:mm, use - se negativo)</span><input name="saldoInicial" value="${minToHHMM(+s.saldoInicial || 0)}" placeholder="00:00"></label>
+    <label class="field"><span>Tempo de almoço padrão (min)</span><input type="number" name="almoco" value="${s.almoco}"></label>
+    <label class="field"><span>Tolerância diária (min)</span><input type="number" name="tolerancia" value="${s.tolerancia}"></label>
+    <div class="field wide"><span>Jornada por dia (horas:minutos de trabalho, sem almoço)</span><div class="checks">${DIAS_LONGOS.map((dn, i) => `<label class="field" style="width:110px"><span>${dn}</span><input type="time" name="j${i}" value="${minToHHMM(s.jornada[i] || 0)}"></label>`).join('')}</div></div>
+    <div class="field wide"><span>Metas semanais em horas (aparecem em "Equilíbrio da semana")</span><div class="checks">${Object.entries(CATS).map(([k, c]) => `<label class="field" style="width:140px"><span>${c.n}</span><input type="number" step="0.5" min="0" name="m_${k}" value="${s.metas?.[k] ?? ''}"></label>`).join('')}</div></div>
+    <div class="form-actions"><span class="sp"></span><button class="btn primary">Salvar ajustes</button></div></div></form>
+    ${lembretesHTML()}
+    <div class="card section"><h3 style="margin-bottom:6px">Backup dos dados</h3><p class="muted small">Seus dados ficam salvos só neste navegador. Exporte um backup de vez em quando e importe para usar em outro aparelho.</p>
+    <div class="btns"><button class="btn primary" data-act="exportar">Exportar backup</button><button class="btn" data-act="importar">Importar backup</button><button class="btn" data-act="exemplos">Carregar exemplos</button><button class="btn danger" data-act="apagarTudo">Apagar tudo</button></div></div>`;
+};
+function ligarConfig() {
+  ligarLembretes();
+  const f = $('#cfg'); if (!f) return;
+  f.onsubmit = e => {
+    e.preventDefault();
+    const s = S.settings, el = f.elements;
+    s.nome = el.nome.value.trim() || 'Fábio';
+    s.saldoInicial = toMin(el.saldoInicial.value) || 0;
+    s.almoco = +el.almoco.value || 0; s.tolerancia = +el.tolerancia.value || 0;
+    s.jornada = DIAS.map((_, i) => toMin(el['j' + i].value) || 0);
+    s.metas = {}; for (const k of Object.keys(CATS)) { const v = +el['m_' + k].value; if (v > 0) s.metas[k] = v; }
+    save(); toast('Ajustes salvos');
+  };
+}
+
+// ================= lembretes no iPhone (via Google Agenda) =================
+const BYDAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+function defLembretes() {
+  return {
+    ponto: { on: false, e1: '08:00', s1: '12:00', e2: '13:00', s2: '17:00', ids: [] },
+    feira: { on: false, dia: '6', hora: '07:30', ids: [] },
+    tarefas: { on: false, hora: '19:00', ids: [] },
+    prazos: { on: false, ids: [] },
+  };
+}
+function proximaData(dias, hhmm) {
+  const agora = new Date(), min = toMin(hhmm);
+  for (let i = 0; i < 8; i++) {
+    const d = addDays(agora, i);
+    if (!dias.includes(d.getDay())) continue;
+    if (i === 0 && min <= agora.getHours() * 60 + agora.getMinutes()) continue;
+    return iso(d);
+  }
+  return iso(agora);
+}
+const somaMin = (hhmm, n) => fmtHora(toMin(hhmm) + n);
+async function gcCriar({ titulo, data, hora, dias, antes = 0 }) {
+  const input = {
+    summary: '⏰ ' + titulo, description: 'Lembrete criado pelo app Meu dia a dia. Para parar, desligue em Ajustes no app.',
+    startTime: `${data}T${hora}:00`, endTime: `${data}T${somaMin(hora, 5)}:00`,
+    overrideReminders: [{ method: 'popup', minutes: antes }], useDefaultReminders: false,
+    availability: 'AVAILABILITY_FREE', notificationLevel: 'NONE',
+  };
+  if (dias) input.recurrenceData = ['RRULE:FREQ=WEEKLY;BYDAY=' + dias.map(d => BYDAY[d]).join(',')];
+  const r = await mcpApi.callTool(GCAL, 'create_event', input, { cache: false });
+  const pl = (r && r.payload) || {};
+  return pl.id || (pl.event && pl.event.id) || null;
+}
+async function gcApagar(id) {
+  try { await mcpApi.callTool(GCAL, 'delete_event', { eventId: id, notificationLevel: 'NONE' }, { cache: false }); }
+  catch (e) { if (e && e.code !== 'tool_error') throw e; } // tool_error: já não existe
+}
+const PUSH_PUBLIC = 'BGXe3EXAwHodbQcgqXHow0tC4FKPs3QuqoYd4vNTL3LIJwQ1GXqpQrGvXoD3tItyIqNGvN9Vb6MI5_aCdX4PPso'; // chave pública VAPID do servidor de lembretes
+const ehIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const instalado = () => window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+const pushSuportado = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && (location.protocol === 'https:' || location.hostname === 'localhost');
+function lembTogglesHTML(L) {
+  const diasTrab = S.settings.jornada.map((m, i) => m ? DIAS[i] : null).filter(Boolean).join(', ') || 'nenhum';
+  const chk = (k, txt) => `<label class="chk"><input type="checkbox" id="l-${k}" ${L[k].on ? 'checked' : ''}> <b>${txt}</b></label>`;
+  const hora = (id, v, lbl) => `<label class="field" style="width:110px"><span>${lbl}</span><input type="time" id="${id}" value="${v}"></label>`;
+  return `<div class="list" style="gap:14px">
+    <div>${chk('ponto', 'Bater ponto')} <span class="muted small">nos dias de expediente (${diasTrab})</span>
+      <div class="checks" style="margin-top:6px">${hora('l-e1', L.ponto.e1, 'Entrada')}${hora('l-s1', L.ponto.s1, 'Saída almoço')}${hora('l-e2', L.ponto.e2, 'Volta almoço')}${hora('l-s2', L.ponto.s2, 'Saída')}</div></div>
+    <div>${chk('feira', 'Lista da feira')} <span class="muted small">lembrete para conferir a lista antes de sair</span>
+      <div class="checks" style="margin-top:6px"><label class="field" style="width:140px"><span>Dia</span><select id="l-fdia">${DIAS_LONGOS.map((d, i) => `<option value="${i}"${String(i) === String(L.feira.dia) ? ' selected' : ''}>${d}</option>`).join('')}</select></label>${hora('l-fhora', L.feira.hora, 'Horário')}</div></div>
+    <div>${chk('tarefas', 'Tarefas de casa')} <span class="muted small">um aviso por dia para ver as tarefas pendentes</span>
+      <div class="checks" style="margin-top:6px">${hora('l-thora', L.tarefas.hora, 'Horário')}</div></div>
+    <div>${chk('prazos', 'Prazos de freela e próximos passos de vagas')} <span class="muted small">avisa às 9h do dia e 1 dia antes</span></div>
+  </div>`;
+}
+const lerLembretes = () => ({
+  ponto: { on: $('#l-ponto').checked, e1: $('#l-e1').value, s1: $('#l-s1').value, e2: $('#l-e2').value, s2: $('#l-s2').value },
+  feira: { on: $('#l-feira').checked, dia: $('#l-fdia').value, hora: $('#l-fhora').value },
+  tarefas: { on: $('#l-tarefas').checked, hora: $('#l-thora').value },
+  prazos: { on: $('#l-prazos').checked },
+});
+function lembretesHTML() {
+  const L = S.lembretes;
+  if (mcpApi) return `<form class="card section" id="lemb"><h3 style="margin-bottom:6px">Notificações no iPhone</h3>
+  <p class="muted small" style="margin-top:0">Os avisos chegam pelo app <b>Google Agenda</b> no iPhone: o app cria lembretes (com ⏰ no nome) na sua agenda e o iPhone avisa na hora. Marque só o que quiser receber. Desmarcar apaga os lembretes da agenda. No iPhone, deixe as notificações do Google Agenda ligadas em Ajustes > Notificações.</p>
+  ${lembTogglesHTML(L)}
+  <p class="small muted" id="l-status" style="margin:10px 0 0"></p>
+  <div class="form-actions"><span class="sp"></span><button class="btn primary">Salvar notificações</button></div></form>`;
+  if (!pushSuportado()) return `<div class="card section"><h3 style="margin-bottom:6px">Notificações</h3>${ehIOS && !instalado()
+    ? '<p class="small" style="margin:0">Para receber notificações no iPhone: abra este site no <b>Safari</b>, toque em <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>. Abra o app pelo ícone novo e volte aqui.</p>'
+    : '<p class="small muted" style="margin:0">Este navegador não recebe notificações do app.</p>'}</div>`;
+  const perm = Notification.permission, ativo = !!(S.push && S.push.sub);
+  const estado = perm === 'denied' ? '<span class="neg">Bloqueadas. Para liberar: Ajustes do iPhone > Notificações > Meu dia.</span>'
+    : ativo && perm === 'granted' ? '<span class="pos">Ativadas neste aparelho.</span>' : '<span class="muted">Ainda não ativadas neste aparelho.</span>';
+  return `<form class="card section" id="lemb"><h3 style="margin-bottom:6px">Notificações</h3>
+  <p class="small" style="margin-top:0">${estado}</p>
+  <div class="btns" style="margin-bottom:14px">${ativo && perm === 'granted'
+    ? '<button type="button" class="btn" data-act="testarPush">Enviar notificação de teste</button><button type="button" class="btn danger" data-act="desativarPush">Desativar neste aparelho</button>'
+    : perm === 'denied' ? '' : '<button type="button" class="btn primary" data-act="ativarPush">Ativar notificações</button>'}</div>
+  ${lembTogglesHTML(L)}
+  <p class="small muted" style="margin:10px 0 0">Ao salvar, o app gera um código com seus horários. Envie esse código para o Claude no projeto para os avisos começarem (ou mudarem). Sem o código, nada é enviado.</p>
+  <p class="small muted" id="l-status" style="margin:6px 0 0"></p>
+  <div class="form-actions"><span class="sp"></span><button class="btn primary" ${ativo ? '' : 'disabled'}>Salvar e gerar código</button></div></form>`;
+}
+function b64urlParaBytes(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4), bin = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+async function ativarPush() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('Notificações não permitidas'); render(); return; }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlParaBytes(PUSH_PUBLIC) });
+    S.push = { sub: sub.toJSON(), em: new Date().toISOString() }; save(); render(); toast('Notificações ativadas');
+  } catch (e) { toast('Não consegui ativar: ' + (e.message || e)); }
+}
+async function desativarPush() {
+  try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* segue */ }
+  S.push = null; save(); render(); toast('Notificações desativadas neste aparelho');
+}
+async function testarPush() {
+  try { const reg = await navigator.serviceWorker.ready; await reg.showNotification('Meu dia a dia', { body: 'As notificações estão funcionando ✅', icon: 'icons/icon-192.png' }); }
+  catch (e) { toast('Não consegui mostrar: ' + (e.message || e)); }
+}
+function codigoLembretes() {
+  const L = S.lembretes, h = hoje(), prazos = [];
+  if (L.prazos.on) {
+    for (const fr of S.freelas) if (['orcamento', 'andamento'].includes(fr.status) && fr.prazo && fr.prazo >= h) prazos.push({ t: 'Entrega do freela: ' + fr.projeto, d: fr.prazo });
+    for (const v of S.vagas) if (v.status !== 'encerrada' && v.proximoData && v.proximoData >= h) prazos.push({ t: `${v.proximo || 'Próximo passo'}: ${v.empresa}`, d: v.proximoData });
+  }
+  const cfg = {
+    v: 1, tz: 'America/Fortaleza', sub: S.push.sub,
+    ponto: L.ponto.on ? { dias: S.settings.jornada.map((m, i) => m ? i : -1).filter(i => i >= 0), horas: MARCAS.map(([k, n]) => [L.ponto[k], 'Bater ponto: ' + n]).filter(x => x[0]) } : null,
+    feira: L.feira.on ? { dia: +L.feira.dia, hora: L.feira.hora } : null,
+    tarefas: L.tarefas.on ? { hora: L.tarefas.hora } : null,
+    prazos: prazos.slice(0, 30),
+  };
+  return 'MDD1:' + btoa(unescape(encodeURIComponent(JSON.stringify(cfg))));
+}
+let salvandoLemb = false;
+function ligarLembretes() {
+  const f = $('#lemb'); if (!f) return;
+  f.onsubmit = async e => {
+    e.preventDefault();
+    if (salvandoLemb) return;
+    const L = S.lembretes, st = $('#l-status'), btn = f.querySelector('button.primary:not([type=button])');
+    const novo = lerLembretes();
+    if (!mcpApi) {
+      if (!S.push || !S.push.sub) return;
+      for (const k of Object.keys(novo)) Object.assign(L[k], novo[k]);
+      save();
+      mostrarTexto('Envie este código para o Claude', codigoLembretes());
+      st.textContent = 'Código gerado. Copie e envie para o Claude no projeto.';
+      return;
+    }
+    salvandoLemb = true; btn.disabled = true; st.className = 'small muted'; st.textContent = 'Atualizando sua agenda…';
+    let semId = 0;
+    const guardar = (k, id) => { if (id) L[k].ids.push(id); else semId++; save(); };
+    try {
+      for (const k of Object.keys(novo)) {
+        const mudou = JSON.stringify({ ...L[k], ids: undefined }) !== JSON.stringify(novo[k]);
+        if (!mudou && k !== 'prazos') continue;
+        while (L[k].ids.length) { await gcApagar(L[k].ids[0]); L[k].ids.shift(); save(); }
+        Object.assign(L[k], novo[k]); save();
+        if (!novo[k].on) continue;
+        if (k === 'ponto') {
+          const dias = S.settings.jornada.map((m, i) => m ? i : -1).filter(i => i >= 0);
+          if (!dias.length) continue;
+          for (const [kk, nome] of MARCAS) if (novo.ponto[kk]) guardar(k, await gcCriar({ titulo: 'Bater ponto: ' + nome, data: proximaData(dias, novo.ponto[kk]), hora: novo.ponto[kk], dias }));
+        } else if (k === 'feira') {
+          const d = [+novo.feira.dia];
+          guardar(k, await gcCriar({ titulo: 'Conferir a lista da feira', data: proximaData(d, novo.feira.hora), hora: novo.feira.hora, dias: d }));
+        } else if (k === 'tarefas') {
+          guardar(k, await gcCriar({ titulo: 'Tarefas de casa de hoje', data: proximaData([0, 1, 2, 3, 4, 5, 6], novo.tarefas.hora), hora: novo.tarefas.hora, dias: [0, 1, 2, 3, 4, 5, 6] }));
+        } else if (k === 'prazos') {
+          const h = hoje(), itens = [];
+          for (const fr of S.freelas) if (['orcamento', 'andamento'].includes(fr.status) && fr.prazo && fr.prazo >= h) itens.push(['Entrega do freela: ' + fr.projeto, fr.prazo]);
+          for (const v of S.vagas) if (v.status !== 'encerrada' && v.proximoData && v.proximoData >= h) itens.push([`${v.proximo || 'Próximo passo'}: ${v.empresa}`, v.proximoData]);
+          for (const [t, d] of itens.slice(0, 20)) guardar(k, await gcCriar({ titulo: t, data: d, hora: '09:00', antes: d > h ? 1440 : 0 }));
+        }
+      }
+      st.className = 'small pos'; st.textContent = 'Notificações atualizadas na sua agenda.' + (semId ? ` (${semId} lembrete(s) criados sem identificação: se desligar, apague-os no Google Agenda.)` : '');
+    } catch (err) {
+      st.className = 'small neg';
+      st.textContent = msgErroGoogle(err) + ' Alguns lembretes podem já ter sido criados; confira o Google Agenda antes de tentar de novo.';
+    }
+    salvandoLemb = false; btn.disabled = false;
+  };
+}
+
+// ================= exemplos =================
+function carregarExemplos() {
+  const d0 = inicioSemana(new Date()), seg = iso(addDays(d0, -28));
+  const ev = (titulo, cat, inicio, fim, dias, local = '') => S.eventos.push({ id: uid(), titulo, cat, data: seg, inicio, fim, rec: 'semanal', dias: dias.map(String), local, exemplo: true });
+  ev('Sair para o trabalho', 'vasta', '07:20', '08:00', [1, 2, 3, 4, 5]);
+  ev('Expediente Vasta', 'vasta', '08:00', '12:00', [1, 2, 3, 4, 5]);
+  ev('Almoço', 'pessoal', '12:00', '13:00', [1, 2, 3, 4, 5]);
+  ev('Expediente Vasta', 'vasta', '13:00', '17:00', [1, 2, 3, 4, 5]);
+  ev('Pilates', 'pilates', '18:30', '19:30', [2, 4], 'Studio');
+  ev('Ensaio do louvor', 'igreja', '19:30', '21:30', [4], 'Igreja');
+  ev('Culto (baixo)', 'igreja', '18:00', '21:00', [0], 'Igreja');
+  ev('Freela: edição', 'freela', '20:00', '22:00', [1, 3]);
+  ev('Videogame', 'games', '21:00', '23:00', [5]);
+  ev('Feira da semana', 'feira', '08:00', '09:30', [6]);
+  ev('Arrumar a casa', 'casa', '10:00', '12:00', [6]);
+  ev('Casa da namorada', 'namorada', '15:00', '22:00', [6]);
+  S.eventos.push({ id: uid(), titulo: 'Show com a banda', cat: 'banda', data: iso(addDays(new Date(), 9)), inicio: '20:00', fim: '23:00', rec: 'nenhuma', local: 'Bar do centro', exemplo: true });
+  // ponto: últimos dias úteis
+  for (let i = 1; i <= 8; i++) {
+    const d = addDays(new Date(), -i); if (!S.settings.jornada[d.getDay()]) continue;
+    const k = iso(d); if (S.ponto[k]) continue;
+    const v = [['07:58', '12:02', '13:00', '17:05'], ['08:10', '12:00', '13:05', '17:00'], ['07:55', '12:00', '12:58', '18:10'], ['08:00', '12:01', '13:00', '17:02']][i % 4];
+    S.ponto[k] = { e1: v[0], s1: v[1], e2: v[2], s2: v[3], exemplo: true };
+  }
+  const t = (titulo, rec, cat = 'casa') => S.tarefas.push({ id: uid(), titulo, rec, cat, exemplo: true });
+  t('Lavar a louça', 'diaria'); t('Lavar roupa', 'semanal'); t('Limpar banheiro', 'semanal'); t('Trocar roupa de cama', 'semanal');
+  t('Pagar contas do mês', 'mensal', 'pessoal'); t('Atualizar portfólio', 'nenhuma', 'vagas');
+  // feira
+  const itens = [['Arroz', 'Mercearia', 'kg', 5, 2.5, 27.9], ['Feijão', 'Mercearia', 'kg', 2, 1, 8.5], ['Café', 'Mercearia', 'pct', 2, 1, 19.9], ['Leite', 'Laticínios', 'L', 6, 4, 5.2], ['Ovos', 'Carnes e ovos', 'dz', 2, 1, 14], ['Frango', 'Carnes e ovos', 'kg', 2, 1.5, 17.5], ['Banana', 'Hortifruti', 'kg', 1.5, 1.2, 6], ['Tomate', 'Hortifruti', 'kg', 1, 0.8, 7.9], ['Detergente', 'Limpeza', 'un', 3, 1, 2.6], ['Papel higiênico', 'Higiene', 'pct', 1, 0.3, 21.9]];
+  const sab = addDays(inicioSemana(new Date()), -2); // último sábado
+  const datas = [iso(addDays(sab, -14)), iso(addDays(sab, -7)), iso(sab)];
+  for (const [nome, cat, unid, qtd, semana, preco] of itens) {
+    const it = { id: uid(), nome, cat, unid, estoque: 0, estoqueData: datas[0], exemplo: true }; S.itens.push(it);
+    let est = 0, ult = datas[0];
+    datas.forEach((dt, k) => {
+      if (k === 1 && semana < qtd) return; // itens que duram mais não são comprados toda semana
+      est = Math.max(0, est - semana / 7 * diffDias(ult, dt)) + qtd; ult = dt;
+      S.compras.push({ id: uid(), exemplo: true, data: dt, local: 'Feira de sábado', itemId: it.id, qtd, valor: Math.round(qtd * preco * (1 + k * 0.02) * 100) / 100 });
+    });
+    it.estoque = Math.round(est * 100) / 100; it.estoqueData = ult;
+  }
+  const oleo = { id: uid(), nome: 'Óleo', cat: 'Mercearia', unid: 'un', estoque: 1, estoqueData: datas[0], consumoSemana: 0.5, exemplo: true };
+  S.itens.push(oleo); S.compras.push({ id: uid(), data: datas[0], local: 'Feira de sábado', itemId: oleo.id, qtd: 1, valor: 8.99 });
+  // música
+  const m = (titulo, artista, tom, instrumento, status, onde = 'igreja') => S.musicas.push({ id: uid(), titulo, artista, tom, instrumento, status, onde, exemplo: true });
+  m('Bondade de Deus', 'Isaias Saad', 'G', 'baixo', 'pronta'); m('Ninguém explica Deus', 'Preto no Branco', 'A', 'baixo', 'ensaiando');
+  m('Lugar secreto', 'Gabriela Rocha', 'D', 'teclado', 'aprender'); m('Garota de Ipanema', 'Tom Jobim', 'F', 'teclado', 'ensaiando', 'banda');
+  // habilidades
+  const h = (nome, area, nivel, anos, ferramentas) => { const x = { id: uid(), nome, area, nivel: String(nivel), anos, ferramentas, exemplo: true }; S.habilidades.push(x); return x.id; };
+  const h1 = h('Edição de vídeo', 'Audiovisual', 4, 3, 'DaVinci Resolve'), h2 = h('Design para redes sociais', 'Design', 4, 3, 'Figma'), h3 = h('Contrabaixo', 'Música', 4, 8, ''), h4 = h('Teclado', 'Música', 3, 4, ''), h5 = h('Social media', 'Marketing', 3, 2, 'Instagram, TikTok');
+  S.atividades.push({ id: uid(), nome: 'Edição de Reels e TikToks', tipo: 'ambos', habs: [h1, h5], valorHora: 60, descricao: 'Cortes, legendas, transições e render vertical.', exemplo: true });
+  S.atividades.push({ id: uid(), nome: 'Carrosséis para Instagram', tipo: 'ambos', habs: [h2, h5], valorHora: 50, descricao: 'Criação no Figma seguindo a identidade da marca.', exemplo: true });
+  S.atividades.push({ id: uid(), nome: 'Baixista/tecladista freelancer', tipo: 'freela', habs: [h3, h4], descricao: 'Eventos, casamentos e cultos.', exemplo: true });
+  S.freelas.push({ id: uid(), projeto: 'Vídeos institucionais', cliente: 'Loja do bairro', status: 'andamento', valor: 800, prazo: iso(addDays(new Date(), 5)), horasEst: 12, exemplo: true });
+  S.freelas.push({ id: uid(), projeto: 'Pacote de 10 carrosséis', cliente: 'Clínica', status: 'pago', valor: 600, pagoEm: hoje(), horasGastas: 10, exemplo: true });
+  S.vagas.push({ id: uid(), cargo: 'Editor de vídeo pleno', empresa: 'Agência X', status: 'entrevista', data: iso(addDays(new Date(), -6)), proximo: 'Entrevista técnica', proximoData: iso(addDays(new Date(), 3)), exemplo: true });
+  S.vagas.push({ id: uid(), cargo: 'Designer de social media', empresa: 'Startup Y', status: 'aplicada', data: iso(addDays(new Date(), -2)), exemplo: true });
+}
+
+const COLS = ['eventos', 'tarefas', 'itens', 'compras', 'musicas', 'habilidades', 'atividades', 'freelas', 'vagas'];
+const temExemplos = () => COLS.some(c => S[c].some(x => x.exemplo)) || Object.values(S.ponto).some(r => r.exemplo);
+function limparExemplos() {
+  const itensEx = new Set(S.itens.filter(i => i.exemplo).map(i => i.id));
+  S.compras = S.compras.filter(c => !itensEx.has(c.itemId));
+  for (const c of COLS) S[c] = S[c].filter(x => !x.exemplo);
+  for (const [d, r] of Object.entries(S.ponto)) if (r.exemplo) delete S.ponto[d];
+}
+
+// ================= roteamento =================
+function render() {
+  const r = (location.hash.replace('#/', '') || 'painel');
+  const rota = V[r] ? r : 'painel';
+  document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('active', a.dataset.r === rota));
+  $('#view').innerHTML = V[rota]();
+  if (rota === 'config') ligarConfig();
+}
+window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+// atualiza relógio do painel a cada minuto (sem atrapalhar formulários abertos)
+setInterval(() => { const r = location.hash.replace('#/', '') || 'painel'; if (r === 'painel' && !dlg.open) render(); }, 60000);
+if (carregarExemplosDepois) { carregarExemplos(); save(); }
+// App instalado (GitHub Pages): modo offline e notificações
+if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
+// Google Agenda: só funciona quando o app é aberto pelo Claude (conector do Google Agenda)
+(async () => {
+  try {
+    if (!window.claude || !window.claude.use) return;
+    const m = await window.claude.use('mcp');
+    if (!m) return;
+    mcpApi = m; if (!dlg.open) render();
+    const perms = await window.claude.use('permissions');
+    const st = perms ? await perms.state('mcp:' + GCAL).catch(() => 'unavailable') : 'unavailable';
+    const velho = !S.google.sync || Date.now() - Date.parse(S.google.sync) > 30 * 60e3;
+    if (st === 'granted' && velho) syncGoogle(false);
+  } catch (e) { /* segue sem Google */ }
+})();
+render();

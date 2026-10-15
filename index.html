@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<title>Meu dia a dia</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%234f46e5'/><text x='50' y='68' font-size='54' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'>D</text></svg>">
+<link rel="stylesheet" href="styles.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Meu dia">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+</head>
+<body>
+<div class="app">
+  <aside class="nav">
+    <div class="brand">Meu dia a dia</div>
+    <nav id="menu">
+      <a href="#/painel" data-r="painel">🏠 <span>Painel</span></a>
+      <a href="#/agenda" data-r="agenda">📅 <span>Agenda</span></a>
+      <a href="#/ponto" data-r="ponto">⏱️ <span>Ponto</span></a>
+      <a href="#/tarefas" data-r="tarefas">✅ <span>Tarefas</span></a>
+      <a href="#/feira" data-r="feira">🛒 <span>Feira</span></a>
+      <a href="#/musica" data-r="musica">🎸 <span>Música</span></a>
+      <a href="#/habilidades" data-r="habilidades">💡 <span>Habilidades</span></a>
+      <a href="#/freela" data-r="freela">💼 <span>Freelas</span></a>
+      <a href="#/vagas" data-r="vagas">📨 <span>Vagas</span></a>
+      <a href="#/config" data-r="config">⚙️ <span>Ajustes</span></a>
+    </nav>
+  </aside>
+  <main id="view"></main>
+</div>
+<dialog id="dlg"></dialog>
+<dialog id="dlg2"></dialog>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
