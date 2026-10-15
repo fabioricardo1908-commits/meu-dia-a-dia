@@ -133,3 +133,4 @@ body{font-variant-numeric:tabular-nums}
 @media (max-width:720px){.nf-lista{max-height:none;overflow:visible}.nf-campos{gap:6px}}
 .form>*{min-width:0}.form-actions{flex-wrap:wrap}
 @media (max-width:720px){.form{grid-template-columns:minmax(0,1fr)}}
+[hidden]{display:none!important}

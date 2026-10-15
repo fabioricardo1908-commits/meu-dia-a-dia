@@ -693,7 +693,10 @@ const SECOES = ['Hortifruti', 'Mercearia', 'Carnes e ovos', 'Laticínios', 'Pada
 const UNIDS = ['un', 'kg', 'g', 'L', 'pct', 'cx', 'dz', 'lata'];
 const nfBotao = (cls = '') => nfEstado === 'off' || nfEstado === 'espera' ? '' : `<button class="btn ${cls}" data-act="lerNota">📷 Ler nota fiscal</button>`;
 const NF_MSG = {
-  rate_limited: 'Muitas leituras seguidas ou limite de uso do Claude atingido. Tente mais tarde.',
+  rate_limited: 'Muitas leituras seguidas ou limite de uso atingido. Tente mais tarde.',
+  chave: 'A chave de IA não foi aceita. Confira em Ajustes > Leitura da nota fiscal.',
+  credito: 'A conta da chave de IA está sem créditos.',
+  modelo: 'O serviço de IA não encontrou o modelo. Me avise para atualizar o app.',
   image_rejected: 'A foto não foi aceita. Tente outra (JPG ou PNG).',
   session_expired: 'Entre de novo na sua conta do Claude e tente outra vez.',
   invalid_json: 'Não consegui entender esta nota. Tente uma foto mais nítida, reta e com boa luz.',
@@ -731,25 +734,90 @@ Regras:
 - "total": o valor total da nota, se aparecer.
 - Se a imagem não for uma nota fiscal legível, responda {"erro":"motivo curto"}.`;
 }
+// No app do GitHub (sem Claude embutido) a leitura usa uma chave de IA do próprio Fábio, guardada só neste aparelho (fora do backup)
+const IA_KEY = 'meu-dia-a-dia:ia';
+const IA_PROV = { gemini: 'Gemini (Google, tem uso grátis)', claude: 'Claude (API da Anthropic, pago por uso)' };
+const iaCfg = () => { try { return JSON.parse(localStorage.getItem(IA_KEY)) || {}; } catch (e) { return {}; } };
+const temChave = () => !!iaCfg().chave;
+const paraBase64 = b => new Promise((ok, err) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = err; r.readAsDataURL(b); });
+function jsonTolerante(t) {
+  t = String(t || '').trim();
+  try { return JSON.parse(t); } catch (e) { }
+  const f = t.match(/```(?:json)?\s*([\s\S]*?)```/); if (f) try { return JSON.parse(f[1]); } catch (e) { }
+  const a = t.indexOf('{'), z = t.lastIndexOf('}');
+  if (a >= 0 && z > a) try { return JSON.parse(t.slice(a, z + 1)); } catch (e) { }
+  throw { code: 'invalid_json' };
+}
+async function iaFetch(url, opt, signal) {
+  let r;
+  try { r = await fetch(url, { ...opt, signal }); } catch (e) { throw { code: e.name === 'AbortError' ? 'cancelled' : 'upstream_error' }; }
+  if (r.ok) return r.json();
+  const corpo = await r.text().catch(() => '');
+  throw { code: r.status === 401 || r.status === 403 || /api[_ ]?key/i.test(corpo) && r.status === 400 ? 'chave' : r.status === 429 ? 'rate_limited' : r.status === 404 ? 'modelo' : r.status === 402 || /credit|billing/i.test(corpo) ? 'credito' : 'upstream_error', status: r.status };
+}
+async function iaJson(prompt, imgs, signal) {
+  const { prov = 'gemini', chave } = iaCfg();
+  const dados = await Promise.all(imgs.map(async b => ({ tipo: b.type || 'image/jpeg', b64: await paraBase64(b) })));
+  let ultimo;
+  if (prov === 'claude') {
+    for (const model of ['claude-sonnet-5-5', 'claude-sonnet-4-5']) {
+      try {
+        const j = await iaFetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': chave, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+          body: JSON.stringify({ model, max_tokens: 8000, messages: [{ role: 'user', content: [...dados.map(d => ({ type: 'image', source: { type: 'base64', media_type: d.tipo, data: d.b64 } })), { type: 'text', text: prompt }] }] }) }, signal);
+        return jsonTolerante((j.content || []).filter(c => c.type === 'text').map(c => c.text).join(''));
+      } catch (e) { ultimo = e; if (e.code !== 'modelo') throw e; }
+    }
+  } else {
+    for (const model of ['gemini-flash-latest', 'gemini-2.5-flash']) {
+      try {
+        const j = await iaFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(chave)}`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [...dados.map(d => ({ inline_data: { mime_type: d.tipo, data: d.b64 } })), { text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0 } }) }, signal);
+        return jsonTolerante((j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join(''));
+      } catch (e) { ultimo = e; if (e.code !== 'modelo') throw e; }
+    }
+  }
+  throw ultimo;
+}
+function iaHTML() {
+  if (window.claude) return '';
+  const c = iaCfg();
+  return `<form class="card section" id="ia-cfg"><h3 style="margin-bottom:6px">Leitura da nota fiscal (Feira)</h3>
+    <p class="muted small">Para ler a foto da nota aqui no app instalado, ele precisa de uma chave de IA sua. A chave fica salva só neste aparelho e não vai no backup.</p>
+    <div class="form" style="padding:0">
+    <label class="field"><span>Serviço</span><select name="prov">${Object.entries(IA_PROV).map(([k, l]) => `<option value="${k}"${(c.prov || 'gemini') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="field"><span>Chave</span><input name="chave" type="password" autocomplete="off" value="${esc(c.chave || '')}" placeholder="Cole a chave aqui"></label>
+    <p class="wide small muted" style="margin:0" id="ia-dica"></p>
+    <div class="form-actions"><button type="button" class="btn danger" data-ia-apagar${c.chave ? '' : ' hidden'}>Remover chave</button><span class="sp"></span><button class="btn primary">Salvar chave</button></div></div></form>`;
+}
+function ligarIA() {
+  const f = $('#ia-cfg'); if (!f) return;
+  const dica = () => { $('#ia-dica').innerHTML = f.elements.prov.value === 'claude'
+    ? 'Crie em <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> (precisa de créditos na conta). Cada nota custa centavos.'
+    : 'Crie de graça em <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> com sua conta Google, toque em "Create API key" e copie.'; };
+  f.elements.prov.onchange = dica; dica();
+  f.onsubmit = e => { e.preventDefault(); const chave = f.elements.chave.value.trim(); try { localStorage.setItem(IA_KEY, JSON.stringify({ prov: f.elements.prov.value, chave })); } catch (e2) { } render(); toast(chave ? 'Chave salva. Já pode ler notas na Feira.' : 'Chave removida'); };
+  f.querySelector('[data-ia-apagar]').onclick = () => { try { localStorage.removeItem(IA_KEY); } catch (e) { } render(); toast('Chave removida'); };
+}
 function lerNota() {
-  if (nfEstado === 'pwa') return aviso('Ler nota fiscal', 'A leitura da foto da nota usa o Claude, então funciona quando você abre o app pelo link do Claude (no navegador ou no app do Claude no iPhone). Os itens registrados lá ficam salvos naquele aparelho.');
-  if (nfEstado !== 'ok') return;
+  if (nfEstado === 'pwa' && !temChave()) { location.hash = '#/config'; setTimeout(() => $('#ia-cfg')?.scrollIntoView({ behavior: 'smooth' }), 100); return toast('Primeiro cole sua chave de IA aqui'); }
+  if (nfEstado !== 'ok' && nfEstado !== 'pwa') return;
+  const lim = sampleImg || { maxCount: 4, mediaTypes: ['image/jpeg', 'image/png', 'image/webp'] };
   const inp = document.createElement('input');
-  inp.type = 'file'; inp.multiple = (sampleImg.maxCount || 1) > 1;
-  inp.accept = (sampleImg.mediaTypes || []).join(',') || 'image/*';
-  inp.onchange = () => { const fs = [...inp.files].slice(0, Math.min(4, sampleImg.maxCount || 1)); if (fs.length) enviarNota(fs); };
+  inp.type = 'file'; inp.multiple = (lim.maxCount || 1) > 1;
+  inp.accept = (lim.mediaTypes || []).join(',') || 'image/*';
+  inp.onchange = () => { const fs = [...inp.files].slice(0, Math.min(4, lim.maxCount || 1)); if (fs.length) enviarNota(fs); };
   inp.click();
 }
 async function enviarNota(files) {
   const ctl = new AbortController();
-  dlg.innerHTML = `<div class="form"><h2>Lendo a nota…</h2><p class="wide muted" style="margin:0">O Claude está lendo ${files.length > 1 ? 'as fotos' : 'a foto'}. Pode levar até um minuto. Na primeira vez ele pede sua permissão.</p><div class="wide bar"><i class="nf-anda"></i></div><div class="form-actions"><span class="sp"></span><button type="button" class="btn" data-cancel>Cancelar</button></div></div>`;
+  dlg.innerHTML = `<div class="form"><h2>Lendo a nota…</h2><p class="wide muted" style="margin:0">${sampleApi ? 'O Claude' : 'A IA'} está lendo ${files.length > 1 ? 'as fotos' : 'a foto'}. Pode levar até um minuto.${sampleApi ? ' Na primeira vez ele pede sua permissão.' : ''}</p><div class="wide bar"><i class="nf-anda"></i></div><div class="form-actions"><span class="sp"></span><button type="button" class="btn" data-cancel>Cancelar</button></div></div>`;
   dlg.querySelector('[data-cancel]').onclick = () => { ctl.abort(); dlg.close(); };
   if (!dlg.open) dlg.showModal();
   try {
     const imgs = await Promise.all(files.map(f => reduzirFoto(f)));
-    const r = await sampleApi.json(nfPrompt(), { images: imgs, signal: ctl.signal, modelTier: 'default' });
+    const r = sampleApi ? await sampleApi.json(nfPrompt(), { images: imgs, signal: ctl.signal, modelTier: 'default' }) : await iaJson(nfPrompt(), imgs, ctl.signal);
     if (!dlg.open) return;
-    if (!r || r.erro || !Array.isArray(r.itens) || !r.itens.length) { dlg.close(); return aviso('Não deu para ler', (r && r.erro ? `O Claude disse: ${r.erro}.\n\n` : '') + 'Tente uma foto mais nítida, com a nota reta, inteira e com boa luz. Se a nota for comprida, tire 2 ou 3 fotos e escolha todas juntas.'); }
+    if (!r || r.erro || !Array.isArray(r.itens) || !r.itens.length) { dlg.close(); return aviso('Não deu para ler', (r && r.erro ? `A IA disse: ${r.erro}.\n\n` : '') + 'Tente uma foto mais nítida, com a nota reta, inteira e com boa luz. Se a nota for comprida, tire 2 ou 3 fotos e escolha todas juntas.'); }
     revisarNota(r);
   } catch (e) {
     const code = e && e.code;
@@ -775,7 +843,7 @@ function revisarNota(r) {
   dlg.innerHTML = `<form class="form"><h2>Confira a nota</h2>
     <label class="field"><span>Data</span><input type="date" name="data" value="${dataOk}" required></label>
     <label class="field"><span>Local</span><input name="local" value="${esc(r.loja || '')}" placeholder="Ex.: Atacadão"></label>
-    <p class="wide muted small" style="margin:0">Desmarque o que não quer registrar e corrija o que o Claude leu errado. "Item" liga a compra a um item do seu estoque; "Novo item" cria um.</p>
+    <p class="wide muted small" style="margin:0">Desmarque o que não quer registrar e corrija o que a IA leu errado. "Item" liga a compra a um item do seu estoque; "Novo item" cria um.</p>
     <div class="wide nf-lista">${linhas.map((l, k) => `<div class="nf-row" data-k="${k}">
       <label class="nf-top"><input type="checkbox" name="ok_${k}" checked><input name="nome_${k}" value="${esc(l.nome)}" aria-label="Nome"></label>
       ${l.desc ? `<div class="small muted nf-desc">${esc(l.desc)}</div>` : ''}
@@ -921,11 +989,12 @@ V.config = () => {
     <div class="field wide"><span>Metas semanais em horas (aparecem em "Equilíbrio da semana")</span><div class="checks">${Object.entries(CATS).map(([k, c]) => `<label class="field" style="width:140px"><span>${c.n}</span><input type="number" step="0.5" min="0" name="m_${k}" value="${s.metas?.[k] ?? ''}"></label>`).join('')}</div></div>
     <div class="form-actions"><span class="sp"></span><button class="btn primary">Salvar ajustes</button></div></div></form>
     ${lembretesHTML()}
+    ${iaHTML()}
     <div class="card section"><h3 style="margin-bottom:6px">Backup dos dados</h3><p class="muted small">Seus dados ficam salvos só neste navegador. Exporte um backup de vez em quando e importe para usar em outro aparelho.</p>
     <div class="btns"><button class="btn primary" data-act="exportar">Exportar backup</button><button class="btn" data-act="importar">Importar backup</button><button class="btn danger" data-act="apagarTudo">Apagar tudo</button></div></div>`;
 };
 function ligarConfig() {
-  ligarLembretes();
+  ligarLembretes(); ligarIA();
   const f = $('#cfg'); if (!f) return;
   f.onsubmit = e => {
     e.preventDefault();

@@ -28,7 +28,7 @@ App pessoal que roda no navegador, sem servidor e sem login. Os dados ficam salv
 - **Feira:** o consumo semanal é calculado pelo intervalo entre compras (precisa de 2 compras), ou pelo valor que você informar no item. O estoque vai sendo descontado sozinho com o passar dos dias. Fica "Acabando" com 7 dias ou menos (ou abaixo do mínimo).
 
 ## Nota fiscal por foto
-Em **Feira > 📷 Ler nota fiscal**, tire uma foto do cupom (ou 2 a 3 fotos se for comprido). O Claude lê a imagem e devolve loja, data, itens, quantidades e valores; você confere numa tela de revisão (pode desmarcar, corrigir e ligar cada linha a um item do estoque ou criar um novo) e registra. Funciona só quando o app é aberto pelo link do Claude (usa o seu limite de uso do Claude e pede permissão na primeira vez).
+Em **Feira > 📷 Ler nota fiscal**, tire uma foto do cupom (ou 2 a 3 fotos se for comprido). O Claude lê a imagem e devolve loja, data, itens, quantidades e valores; você confere numa tela de revisão (pode desmarcar, corrigir e ligar cada linha a um item do estoque ou criar um novo) e registra. Pelo link do Claude, usa o seu limite de uso do Claude (pede permissão na primeira vez). No app do GitHub Pages, cole uma chave de IA em **Ajustes > Leitura da nota fiscal**: Gemini (grátis, criada em https://aistudio.google.com/apikey) ou Claude (API da Anthropic, paga por uso). A chave fica só no aparelho (localStorage `meu-dia-a-dia:ia`) e não entra no backup.
 
 ## Importante: backup
 Os dados ficam só no navegador onde você usa. Em **Ajustes > Exportar backup** você baixa um arquivo `.json`; use **Importar backup** para levar tudo para outro aparelho. Limpar os dados do navegador apaga o app.
@@ -40,4 +40,4 @@ Versão hospedada no GitHub Pages, instalável pelo Safari (Compartilhar > Adici
 - A chave privada VAPID fica no secret `VAPID_PRIVATE_KEY` do repositório (a pública está em `app.js` e `servidor/enviar.mjs`).
 - O código (`MDD1:...`) é salvo cifrado em `servidor/lembretes.enc` com `servidor/cifrar.mjs` (só quem tem a chave privada lê). Também pode ir direto no secret `LEMBRETES`.
 - `.github/workflows/lembretes.yml` roda `servidor/enviar.mjs` a cada 5 minutos e envia o que estiver na hora (aceita até 30 min de atraso do agendador do GitHub). `servidor/estado.json` guarda o que já foi enviado no dia.
-- Nesta versão a sincronização com o Google Agenda não funciona (ela depende do conector do Claude).
+- Nesta versão a sincronização com o Google Agenda não funciona (ela depende do conector do Claude). A leitura da nota fiscal funciona com uma chave de IA própria (veja acima).
