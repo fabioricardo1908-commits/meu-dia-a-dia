@@ -572,10 +572,9 @@ V.painel = () => {
   for (const f of S.freelas) if (['orcamento', 'andamento'].includes(f.status) && f.prazo && f.prazo >= d && diffDias(d, f.prazo) <= 7) prox.push([f.prazo, '', `Entrega: ${f.projeto}`, CATS.freela.c]);
   for (const v of S.vagas) if (v.proximoData && v.proximoData >= d && diffDias(d, v.proximoData) <= 7 && v.status !== 'encerrada') prox.push([v.proximoData, '', `${v.proximo || 'Próximo passo'}: ${v.empresa}`, CATS.vagas.c]);
   prox.sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]));
-  const semDados = !S.eventos.length && !S.itens.length && !S.tarefas.length && !S.habilidades.length;
   return head(`${saud}, ${esc(S.settings.nome)}!`, fmtData(d, { weekday: 'long', day: 'numeric', month: 'long' }),
     `<button class="btn" data-act="novoEvento">+ Compromisso</button><button class="btn" data-act="novaTarefa">+ Tarefa</button>`) +
-    (semDados ? `<div class="banner section"><div><b>Tudo vazio por aqui.</b> <span class="muted">Comece pelos Ajustes (sua jornada) e depois cadastre compromissos, itens da feira e tarefas.</span></div><div class="btns"><a class="btn primary" href="#/config">Configurar minha jornada</a></div></div>` : '') +
+
     `<div class="grid">
     ${cardPontoHoje()}
     <div class="card"><div class="card-h"><h3>📅 Hoje</h3><a href="#/agenda" class="small">semana</a></div>${gBarHTML()}${evs.map(e => evHTML(e, d)).join('') || vazio('Nada na agenda hoje')}</div>

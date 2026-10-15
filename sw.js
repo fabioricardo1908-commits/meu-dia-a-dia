@@ -1,5 +1,5 @@
 /* Service worker: funciona offline e mostra as notificações enviadas pelo servidor de lembretes. */
-const CACHE = 'meu-dia-v1';
+const CACHE = 'meu-dia-v2';
 const ARQUIVOS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
