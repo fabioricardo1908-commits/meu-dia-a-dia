@@ -547,8 +547,27 @@ function baixar(nome, conteudo, tipo) {
 }
 
 // ================= telas =================
-const head = (titulo, sub, botoes = '') => `<div class="head"><div><h1>${titulo}</h1>${sub ? `<div class="muted">${sub}</div>` : ''}</div><div class="btns">${botoes}</div></div>`;
+let rotaAtual = 'painel';
+const head = (titulo, sub, botoes = '') => (rotaAtual !== 'painel' ? `<a class="voltar" href="#/painel" aria-label="Voltar ao início">‹ Início</a>` : '') + `<div class="head"><div><h1>${titulo}</h1>${sub ? `<div class="muted">${sub}</div>` : ''}</div><div class="btns">${botoes}</div></div>`;
 const vazio = txt => `<div class="empty">${txt}</div>`;
+// atalhos grandes do Início, com um resumo de cada área
+function atalhosHTML() {
+  const d = hoje(), ym = d.slice(0, 7), plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+  const lista = S.itens.filter(it => naLista(it, itemInfo(it))).length, st = saldoTotal();
+  const t = [
+    ['agenda', '📅', 'Agenda', plural(ocorrencias(d).length, 'compromisso hoje', 'compromissos hoje')],
+    ['ponto', '⏱️', 'Ponto', `banco ${fmtSaldo(st)}`],
+    ['tarefas', '✅', 'Tarefas', plural(S.tarefas.filter(x => !feita(x)).length, 'pendente', 'pendentes')],
+    ['feira', '🛒', 'Feira', lista ? plural(lista, 'item na lista', 'itens na lista') : 'lista em dia'],
+    ['carro', '⛽', 'Combustível', `${brl(gastoComb(ym + '-01', ym + '-31'))} no mês`],
+    ['musica', '🎸', 'Música', plural(S.musicas.length, 'música', 'músicas')],
+    ['habilidades', '💡', 'Habilidades', plural(S.habilidades.length, 'cadastrada', 'cadastradas')],
+    ['freela', '💼', 'Freelas', plural(S.freelas.filter(f => f.status === 'andamento').length, 'em andamento', 'em andamento')],
+    ['vagas', '📨', 'Vagas', plural(S.vagas.filter(v => v.status !== 'encerrada').length, 'processo ativo', 'processos ativos')],
+    ['config', '⚙️', 'Ajustes', 'jornada, avisos e backup'],
+  ];
+  return `<nav class="tiles section" aria-label="Áreas do app">${t.map(([r, ic, n, sub]) => `<a class="tile" href="#/${r}"><span class="ico" aria-hidden="true">${ic}</span><b>${n}</b><small>${esc(sub)}</small></a>`).join('')}</nav>`;
+}
 
 function cardPontoHoje() {
   const d = hoje(), c = calcDia(d), r = c.r, prev = previsaoSaida(d), st = saldoTotal();
@@ -582,7 +601,7 @@ V.painel = () => {
   for (const v of S.vagas) if (v.proximoData && v.proximoData >= d && diffDias(d, v.proximoData) <= 7 && v.status !== 'encerrada') prox.push([v.proximoData, '', `${v.proximo || 'Próximo passo'}: ${v.empresa}`, CATS.vagas.c]);
   prox.sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]));
   return head(`${saud}, ${esc(S.settings.nome)}!`, fmtData(d, { weekday: 'long', day: 'numeric', month: 'long' }),
-    `<button class="btn" data-act="novoEvento">+ Compromisso</button><button class="btn" data-act="novaTarefa">+ Tarefa</button>`) +
+    `<button class="btn" data-act="novoEvento">+ Compromisso</button><button class="btn" data-act="novaTarefa">+ Tarefa</button>`) + atalhosHTML() + `<h2>Hoje</h2>` +
 
     `<div class="grid">
     ${cardPontoHoje()}
@@ -1272,6 +1291,7 @@ function render() {
   const r = (location.hash.replace('#/', '') || 'painel');
   const rota = V[r] ? r : 'painel';
   document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('active', a.dataset.r === rota));
+  rotaAtual = rota;
   $('#view').innerHTML = V[rota]();
   if (rota === 'config') ligarConfig();
   if (rota === 'carro') ligarCarro();
