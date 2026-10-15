@@ -53,7 +53,6 @@ function confirmar(msg, sim, rotulo = 'Confirmar') {
 
 // ================= dados =================
 const KEY = 'meu-dia-a-dia:v1';
-let carregarExemplosDepois = false;
 const CATS = {
   vasta: { n: 'Trabalho (Vasta)', c: '#3b82f6' }, freela: { n: 'Freelance', c: '#8b5cf6' },
   igreja: { n: 'Igreja (música)', c: '#f59e0b' }, banda: { n: 'Banda', c: '#ef4444' },
@@ -82,12 +81,14 @@ function carregarDe(raw) {
   S.settings = Object.assign(defaults().settings, S.settings || {});
   S.google = Object.assign({ eventos: [], sync: null, cats: {} }, S.google || {});
   S.lembretes = Object.assign(defLembretes(), S.lembretes || {});
+  // versões antigas marcavam dados de exemplo; agora tudo é tratado como dado seu
+  for (const c of ['eventos', 'tarefas', 'itens', 'compras', 'musicas', 'habilidades', 'atividades', 'freelas', 'vagas']) for (const x of (S[c] || [])) delete x.exemplo;
+  for (const r of Object.values(S.ponto || {})) delete r.exemplo;
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Não consegui salvar no navegador!'); }
 }
 carregar();
-try { if (!localStorage.getItem(KEY)) { carregarExemplosDepois = true; } } catch (e) { carregarExemplosDepois = true; }
 
 // ================= agenda =================
 function ocorrencias(dataISO) {
@@ -505,8 +506,6 @@ const A = {
     d.showModal();
   },
   apagarTudo: () => confirmar('Apagar TODOS os dados deste navegador? Faça um backup antes.', () => { try { localStorage.removeItem(KEY); } catch (e) { } S = null; carregarDe(null); save(); render(); toast('Dados apagados'); }, 'Apagar tudo'),
-  limparExemplos: () => confirmar('Remover todos os dados de exemplo? O que você cadastrou continua.', () => { limparExemplos(); save(); render(); toast('Exemplos removidos'); }, 'Remover exemplos'),
-  exemplos: () => { carregarExemplos(); save(); render(); toast('Exemplos carregados. Edite ou apague à vontade.'); },
 };
 // ações por mudança de campo
 const C = {
@@ -576,8 +575,7 @@ V.painel = () => {
   const semDados = !S.eventos.length && !S.itens.length && !S.tarefas.length && !S.habilidades.length;
   return head(`${saud}, ${esc(S.settings.nome)}!`, fmtData(d, { weekday: 'long', day: 'numeric', month: 'long' }),
     `<button class="btn" data-act="novoEvento">+ Compromisso</button><button class="btn" data-act="novaTarefa">+ Tarefa</button>`) +
-    (temExemplos() ? `<div class="banner section"><div><b>Você está vendo dados de exemplo.</b> <span class="muted">Explore à vontade. Quando quiser começar com os seus, remova os exemplos.</span></div><div class="btns"><button class="btn primary" data-act="limparExemplos">Remover exemplos</button><a class="btn" href="#/config">Configurar minha jornada</a></div></div>` :
-    semDados ? `<div class="banner section"><div><b>Tudo vazio por aqui.</b> <span class="muted">Carregue uma rotina de exemplo para ver tudo funcionando, ou comece pelos Ajustes.</span></div><div class="btns"><button class="btn primary" data-act="exemplos">Carregar exemplos</button><a class="btn" href="#/config">Configurar minha jornada</a></div></div>` : '') +
+    (semDados ? `<div class="banner section"><div><b>Tudo vazio por aqui.</b> <span class="muted">Comece pelos Ajustes (sua jornada) e depois cadastre compromissos, itens da feira e tarefas.</span></div><div class="btns"><a class="btn primary" href="#/config">Configurar minha jornada</a></div></div>` : '') +
     `<div class="grid">
     ${cardPontoHoje()}
     <div class="card"><div class="card-h"><h3>📅 Hoje</h3><a href="#/agenda" class="small">semana</a></div>${gBarHTML()}${evs.map(e => evHTML(e, d)).join('') || vazio('Nada na agenda hoje')}</div>
@@ -776,7 +774,7 @@ V.config = () => {
     <div class="form-actions"><span class="sp"></span><button class="btn primary">Salvar ajustes</button></div></div></form>
     ${lembretesHTML()}
     <div class="card section"><h3 style="margin-bottom:6px">Backup dos dados</h3><p class="muted small">Seus dados ficam salvos só neste navegador. Exporte um backup de vez em quando e importe para usar em outro aparelho.</p>
-    <div class="btns"><button class="btn primary" data-act="exportar">Exportar backup</button><button class="btn" data-act="importar">Importar backup</button><button class="btn" data-act="exemplos">Carregar exemplos</button><button class="btn danger" data-act="apagarTudo">Apagar tudo</button></div></div>`;
+    <div class="btns"><button class="btn primary" data-act="exportar">Exportar backup</button><button class="btn" data-act="importar">Importar backup</button><button class="btn danger" data-act="apagarTudo">Apagar tudo</button></div></div>`;
 };
 function ligarConfig() {
   ligarLembretes();
@@ -965,74 +963,6 @@ function ligarLembretes() {
   };
 }
 
-// ================= exemplos =================
-function carregarExemplos() {
-  const d0 = inicioSemana(new Date()), seg = iso(addDays(d0, -28));
-  const ev = (titulo, cat, inicio, fim, dias, local = '') => S.eventos.push({ id: uid(), titulo, cat, data: seg, inicio, fim, rec: 'semanal', dias: dias.map(String), local, exemplo: true });
-  ev('Sair para o trabalho', 'vasta', '07:20', '08:00', [1, 2, 3, 4, 5]);
-  ev('Expediente Vasta', 'vasta', '08:00', '12:00', [1, 2, 3, 4, 5]);
-  ev('Almoço', 'pessoal', '12:00', '13:00', [1, 2, 3, 4, 5]);
-  ev('Expediente Vasta', 'vasta', '13:00', '17:00', [1, 2, 3, 4, 5]);
-  ev('Pilates', 'pilates', '18:30', '19:30', [2, 4], 'Studio');
-  ev('Ensaio do louvor', 'igreja', '19:30', '21:30', [4], 'Igreja');
-  ev('Culto (baixo)', 'igreja', '18:00', '21:00', [0], 'Igreja');
-  ev('Freela: edição', 'freela', '20:00', '22:00', [1, 3]);
-  ev('Videogame', 'games', '21:00', '23:00', [5]);
-  ev('Feira da semana', 'feira', '08:00', '09:30', [6]);
-  ev('Arrumar a casa', 'casa', '10:00', '12:00', [6]);
-  ev('Casa da namorada', 'namorada', '15:00', '22:00', [6]);
-  S.eventos.push({ id: uid(), titulo: 'Show com a banda', cat: 'banda', data: iso(addDays(new Date(), 9)), inicio: '20:00', fim: '23:00', rec: 'nenhuma', local: 'Bar do centro', exemplo: true });
-  // ponto: últimos dias úteis
-  for (let i = 1; i <= 8; i++) {
-    const d = addDays(new Date(), -i); if (!S.settings.jornada[d.getDay()]) continue;
-    const k = iso(d); if (S.ponto[k]) continue;
-    const v = [['07:58', '12:02', '13:00', '17:05'], ['08:10', '12:00', '13:05', '17:00'], ['07:55', '12:00', '12:58', '18:10'], ['08:00', '12:01', '13:00', '17:02']][i % 4];
-    S.ponto[k] = { e1: v[0], s1: v[1], e2: v[2], s2: v[3], exemplo: true };
-  }
-  const t = (titulo, rec, cat = 'casa') => S.tarefas.push({ id: uid(), titulo, rec, cat, exemplo: true });
-  t('Lavar a louça', 'diaria'); t('Lavar roupa', 'semanal'); t('Limpar banheiro', 'semanal'); t('Trocar roupa de cama', 'semanal');
-  t('Pagar contas do mês', 'mensal', 'pessoal'); t('Atualizar portfólio', 'nenhuma', 'vagas');
-  // feira
-  const itens = [['Arroz', 'Mercearia', 'kg', 5, 2.5, 27.9], ['Feijão', 'Mercearia', 'kg', 2, 1, 8.5], ['Café', 'Mercearia', 'pct', 2, 1, 19.9], ['Leite', 'Laticínios', 'L', 6, 4, 5.2], ['Ovos', 'Carnes e ovos', 'dz', 2, 1, 14], ['Frango', 'Carnes e ovos', 'kg', 2, 1.5, 17.5], ['Banana', 'Hortifruti', 'kg', 1.5, 1.2, 6], ['Tomate', 'Hortifruti', 'kg', 1, 0.8, 7.9], ['Detergente', 'Limpeza', 'un', 3, 1, 2.6], ['Papel higiênico', 'Higiene', 'pct', 1, 0.3, 21.9]];
-  const sab = addDays(inicioSemana(new Date()), -2); // último sábado
-  const datas = [iso(addDays(sab, -14)), iso(addDays(sab, -7)), iso(sab)];
-  for (const [nome, cat, unid, qtd, semana, preco] of itens) {
-    const it = { id: uid(), nome, cat, unid, estoque: 0, estoqueData: datas[0], exemplo: true }; S.itens.push(it);
-    let est = 0, ult = datas[0];
-    datas.forEach((dt, k) => {
-      if (k === 1 && semana < qtd) return; // itens que duram mais não são comprados toda semana
-      est = Math.max(0, est - semana / 7 * diffDias(ult, dt)) + qtd; ult = dt;
-      S.compras.push({ id: uid(), exemplo: true, data: dt, local: 'Feira de sábado', itemId: it.id, qtd, valor: Math.round(qtd * preco * (1 + k * 0.02) * 100) / 100 });
-    });
-    it.estoque = Math.round(est * 100) / 100; it.estoqueData = ult;
-  }
-  const oleo = { id: uid(), nome: 'Óleo', cat: 'Mercearia', unid: 'un', estoque: 1, estoqueData: datas[0], consumoSemana: 0.5, exemplo: true };
-  S.itens.push(oleo); S.compras.push({ id: uid(), data: datas[0], local: 'Feira de sábado', itemId: oleo.id, qtd: 1, valor: 8.99 });
-  // música
-  const m = (titulo, artista, tom, instrumento, status, onde = 'igreja') => S.musicas.push({ id: uid(), titulo, artista, tom, instrumento, status, onde, exemplo: true });
-  m('Bondade de Deus', 'Isaias Saad', 'G', 'baixo', 'pronta'); m('Ninguém explica Deus', 'Preto no Branco', 'A', 'baixo', 'ensaiando');
-  m('Lugar secreto', 'Gabriela Rocha', 'D', 'teclado', 'aprender'); m('Garota de Ipanema', 'Tom Jobim', 'F', 'teclado', 'ensaiando', 'banda');
-  // habilidades
-  const h = (nome, area, nivel, anos, ferramentas) => { const x = { id: uid(), nome, area, nivel: String(nivel), anos, ferramentas, exemplo: true }; S.habilidades.push(x); return x.id; };
-  const h1 = h('Edição de vídeo', 'Audiovisual', 4, 3, 'DaVinci Resolve'), h2 = h('Design para redes sociais', 'Design', 4, 3, 'Figma'), h3 = h('Contrabaixo', 'Música', 4, 8, ''), h4 = h('Teclado', 'Música', 3, 4, ''), h5 = h('Social media', 'Marketing', 3, 2, 'Instagram, TikTok');
-  S.atividades.push({ id: uid(), nome: 'Edição de Reels e TikToks', tipo: 'ambos', habs: [h1, h5], valorHora: 60, descricao: 'Cortes, legendas, transições e render vertical.', exemplo: true });
-  S.atividades.push({ id: uid(), nome: 'Carrosséis para Instagram', tipo: 'ambos', habs: [h2, h5], valorHora: 50, descricao: 'Criação no Figma seguindo a identidade da marca.', exemplo: true });
-  S.atividades.push({ id: uid(), nome: 'Baixista/tecladista freelancer', tipo: 'freela', habs: [h3, h4], descricao: 'Eventos, casamentos e cultos.', exemplo: true });
-  S.freelas.push({ id: uid(), projeto: 'Vídeos institucionais', cliente: 'Loja do bairro', status: 'andamento', valor: 800, prazo: iso(addDays(new Date(), 5)), horasEst: 12, exemplo: true });
-  S.freelas.push({ id: uid(), projeto: 'Pacote de 10 carrosséis', cliente: 'Clínica', status: 'pago', valor: 600, pagoEm: hoje(), horasGastas: 10, exemplo: true });
-  S.vagas.push({ id: uid(), cargo: 'Editor de vídeo pleno', empresa: 'Agência X', status: 'entrevista', data: iso(addDays(new Date(), -6)), proximo: 'Entrevista técnica', proximoData: iso(addDays(new Date(), 3)), exemplo: true });
-  S.vagas.push({ id: uid(), cargo: 'Designer de social media', empresa: 'Startup Y', status: 'aplicada', data: iso(addDays(new Date(), -2)), exemplo: true });
-}
-
-const COLS = ['eventos', 'tarefas', 'itens', 'compras', 'musicas', 'habilidades', 'atividades', 'freelas', 'vagas'];
-const temExemplos = () => COLS.some(c => S[c].some(x => x.exemplo)) || Object.values(S.ponto).some(r => r.exemplo);
-function limparExemplos() {
-  const itensEx = new Set(S.itens.filter(i => i.exemplo).map(i => i.id));
-  S.compras = S.compras.filter(c => !itensEx.has(c.itemId));
-  for (const c of COLS) S[c] = S[c].filter(x => !x.exemplo);
-  for (const [d, r] of Object.entries(S.ponto)) if (r.exemplo) delete S.ponto[d];
-}
-
 // ================= roteamento =================
 function render() {
   const r = (location.hash.replace('#/', '') || 'painel');
@@ -1044,7 +974,6 @@ function render() {
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 // atualiza relógio do painel a cada minuto (sem atrapalhar formulários abertos)
 setInterval(() => { const r = location.hash.replace('#/', '') || 'painel'; if (r === 'painel' && !dlg.open) render(); }, 60000);
-if (carregarExemplosDepois) { carregarExemplos(); save(); }
 // App instalado (GitHub Pages): modo offline e notificações
 if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 // Google Agenda: só funciona quando o app é aberto pelo Claude (conector do Google Agenda)
