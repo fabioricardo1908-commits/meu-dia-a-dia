@@ -17,6 +17,7 @@ App pessoal que roda no navegador, sem servidor e sem login. Os dados ficam salv
 | Ponto | Entrada, almoço, volta e saída; saída prevista; saldo do mês e banco de horas; exporta CSV |
 | Tarefas | Tarefas da casa e pessoais, avulsas ou repetindo todo dia/semana/mês |
 | Feira | Estoque estimado, consumo por semana, quando acaba, lista de compras (copia p/ WhatsApp), gastos, leitura da nota fiscal por foto |
+| Combustível | Abastecimentos, gasto por mês, consumo em km/L e R$/km (método do tanque cheio), previsão do próximo abastecimento, calculadora gasolina × etanol |
 | Música | Cultos, ensaios e shows (categorias Igreja/Banda) e repertório por status, tom e instrumento |
 | Habilidades | Habilidades, nível, atividades que pode oferecer e resumo pronto para currículo |
 | Freelas | Projetos fora da Vasta, prazos, a receber, recebido, valor/hora real |

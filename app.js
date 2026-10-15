@@ -74,7 +74,7 @@ const DIAS_LONGOS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta'
 
 const defaults = () => ({
   settings: { nome: 'Fábio', jornada: [0, 480, 480, 480, 480, 480, 0], almoco: 60, tolerancia: 10, saldoInicial: 0, metas: { pilates: 2, namorada: 8, games: 4, freela: 6, estudo: 3, casa: 3 } },
-  eventos: [], ponto: {}, tarefas: [], itens: [], compras: [], musicas: [], habilidades: [], atividades: [], freelas: [], vagas: [],
+  eventos: [], ponto: {}, tarefas: [], itens: [], compras: [], musicas: [], habilidades: [], atividades: [], freelas: [], vagas: [], abastecimentos: [],
 });
 let S;
 function carregar() {
@@ -475,6 +475,8 @@ const A = {
   },
   toggleComprar: ({ id }) => { const it = byId('itens', id); it.comprar = !it.comprar; save(); render(); },
   novaFeira: () => abrirFeira(),
+  novoAbast: () => abrirAbast(null),
+  editAbast: ({ id }) => abrirAbast(byId('abastecimentos', id)),
   lerNota: () => lerNota(),
   copiarLista: () => {
     const linhas = S.itens.map(it => [it, itemInfo(it)]).filter(([it, i]) => naLista(it, i)).map(([it, i]) => `- ${it.nome} (${num(i.sugerido, 2)} ${it.unid})`);
@@ -589,6 +591,7 @@ V.painel = () => {
     <div class="card"><div class="card-h"><h3>🛒 Feira</h3><a href="#/feira" class="small">abrir</a></div>
       <div class="row-stats" style="margin:0 0 10px"><div><span class="muted small">Gasto no mês</span><b>${brl(gastoMes(d.slice(0, 7)))}</b></div><div><span class="muted small">Precisa comprar</span><b>${infos.length} ${infos.length === 1 ? "item" : "itens"}</b></div></div>
       <div class="list">${infos.slice(0, 6).map(([it, i]) => `<div class="li" data-act="editItem" data-id="${it.id}"><div class="grow"><div class="t">${esc(it.nome)}</div><div class="small muted">${i.acabaEm ? 'acaba ' + fmtData(i.acabaEm) : 'sem previsão'}</div></div><span class="tag ${i.status}">${it.comprar && i.status === 'ok' ? 'Na lista' : STATUS_LBL[i.status]}</span></div>`).join('') || vazio('Despensa abastecida')}</div></div>
+    ${S.abastecimentos.length ? cardCombustivel() : ''}
     <div class="card"><div class="card-h"><h3>🔜 Próximos 7 dias</h3></div><div class="list">${prox.slice(0, 8).map(([dd, hr, t, c]) => `<div class="li"><span class="dot" style="background:${c}"></span><div class="grow"><div class="t">${esc(t)}</div><div class="small muted">${fmtData(dd)}${hr ? ' · ' + hr : ''}</div></div></div>`).join('') || vazio('Sem ensaios, entregas ou entrevistas')}</div></div>
     <div class="card"><div class="card-h"><h3>⚖️ Equilíbrio da semana</h3></div>${cardEquilibrio(inicioSemana(new Date()))}</div>
   </div>`;
@@ -930,6 +933,90 @@ V.feira = () => {
     `<div class="tabs">${tabs.map(([k, l]) => `<button class="btn ${feiraTab === k ? 'on' : ''}" data-act="feiraTab" data-t="${k}">${l}</button>`).join('')}</div>${corpo}`;
 };
 
+// ================= combustível =================
+const COMB = [['gasolina', 'Gasolina'], ['etanol', 'Etanol'], ['aditivada', 'Gasolina aditivada'], ['diesel', 'Diesel'], ['gnv', 'GNV']];
+const COMB_LBL = Object.fromEntries(COMB);
+F.abast = [
+  { k: 'data', label: 'Data', type: 'date', req: 1 },
+  { k: 'posto', label: 'Posto', ph: 'Ex.: Shell da avenida' },
+  { k: 'comb', label: 'Combustível', type: 'select', options: COMB },
+  { k: 'valor', label: 'Valor pago (R$)', type: 'number', step: 'any', req: 1 },
+  { k: 'preco', label: 'Preço do litro (R$)', type: 'number', step: 'any', ph: 'Ex.: 6,19' },
+  { k: 'litros', label: 'Litros (opcional)', type: 'number', step: 'any', ph: 'Calculo pelo preço se vazio' },
+  { k: 'km', label: 'Km no painel (hodômetro)', type: 'number', step: 'any', ph: 'Para calcular o consumo' },
+  { k: 'cheio', label: 'Encheu o tanque', type: 'checkbox' },
+  { k: 'notas', label: 'Notas', type: 'textarea', wide: 1 },
+];
+const litrosDe = a => +a.litros || (+a.preco ? (+a.valor || 0) / +a.preco : 0);
+const precoDe = a => +a.preco || (+a.litros ? (+a.valor || 0) / +a.litros : 0);
+const gastoComb = (a, b) => S.abastecimentos.filter(x => x.data >= a && x.data <= b).reduce((s, x) => s + (+x.valor || 0), 0);
+// Consumo pelo método do tanque cheio: entre dois "encheu o tanque", km rodados ÷ litros colocados depois do primeiro
+function consumoCarro() {
+  const l = S.abastecimentos.filter(a => +a.km > 0).sort((a, b) => a.km - b.km || a.data.localeCompare(b.data));
+  const trechos = []; let ini = null, litros = 0, valor = 0;
+  for (const a of l) {
+    if (ini) { litros += litrosDe(a); valor += +a.valor || 0; }
+    if (a.cheio) {
+      if (ini && litros > 0 && a.km > ini.km) trechos.push({ fim: a, km: a.km - ini.km, litros, valor, kml: (a.km - ini.km) / litros });
+      ini = a; litros = 0; valor = 0;
+    }
+  }
+  const rec = trechos.slice(-5), km = rec.reduce((s, t) => s + t.km, 0), lt = rec.reduce((s, t) => s + t.litros, 0), vl = rec.reduce((s, t) => s + t.valor, 0);
+  return { trechos, kml: lt ? km / lt : 0, rsKm: km ? vl / km : 0, porId: Object.fromEntries(trechos.map(t => [t.fim.id, t])) };
+}
+function proximoAbast() {
+  const ds = [...new Set(S.abastecimentos.map(a => a.data))].sort();
+  if (ds.length < 3) return null;
+  const rec = ds.slice(-6), media = diffDias(rec[0], rec.at(-1)) / (rec.length - 1);
+  return media >= 1 ? { media, data: iso(addDays(parseISO(ds.at(-1)), Math.round(media))) } : null;
+}
+function cardCombustivel() {
+  const ym = hoje().slice(0, 7), c = consumoCarro();
+  return `<div class="card"><div class="card-h"><h3>⛽ Combustível</h3><a href="#/carro" class="small">abrir</a></div>
+    <div class="row-stats" style="margin:0"><div><span class="muted small">Gasto no mês</span><b>${brl(gastoComb(ym + '-01', ym + '-31'))}</b></div><div><span class="muted small">Consumo</span><b>${c.kml ? num(c.kml) + ' km/L' : '—'}</b></div></div>
+    <button class="btn block" data-act="novoAbast">+ Abastecimento</button></div>`;
+}
+V.carro = () => {
+  const d = hoje(), ym = d.slice(0, 7), pm = new Date(); pm.setDate(1); pm.setMonth(pm.getMonth() - 1);
+  const ymAnt = iso(pm).slice(0, 7), mesG = m => gastoComb(m + '-01', m + '-31');
+  const meses = [...Array(6)].map((_, k) => { const x = new Date(); x.setDate(1); x.setMonth(x.getMonth() - 5 + k); return iso(x).slice(0, 7); });
+  const vals = meses.map(mesG), max = Math.max(...vals, 1), comDados = vals.filter(v => v > 0);
+  const media = comDados.length ? comDados.reduce((s, v) => s + v, 0) / comDados.length : 0;
+  const c = consumoCarro(), prox = proximoAbast();
+  const hist = [...S.abastecimentos].sort((a, b) => b.data.localeCompare(a.data) || (b.km || 0) - (a.km || 0));
+  const ult = hist.find(a => precoDe(a) > 0);
+  const litrosMes = S.abastecimentos.filter(a => a.data.startsWith(ym)).reduce((s, a) => s + litrosDe(a), 0);
+  return head('Combustível', 'Abastecimentos, consumo do carro e quanto você gasta', `<button class="btn primary" data-act="novoAbast">+ Abastecimento</button>`) +
+    `<div class="stats"><div class="stat"><span>Este mês</span><b>${brl(mesG(ym))}</b><span>${litrosMes ? num(litrosMes) + ' litros' : ''}</span></div><div class="stat"><span>Mês passado</span><b>${brl(mesG(ymAnt))}</b></div><div class="stat"><span>Média por mês</span><b>${brl(media)}</b></div>
+    <div class="stat"><span>Consumo médio</span><b>${c.kml ? num(c.kml) + ' km/L' : '—'}</b><span>${c.rsKm ? brl(c.rsKm) + ' por km' : 'encha o tanque 2x e anote o km'}</span></div>
+    <div class="stat"><span>Último preço</span><b>${ult ? brl(precoDe(ult)) : '—'}</b><span>${ult ? esc(COMB_LBL[ult.comb] || '') : ''}</span></div>
+    <div class="stat"><span>Próximo abastecimento</span><b>${prox ? fmtData(prox.data, { day: '2-digit', month: '2-digit' }) : '—'}</b><span>${prox ? 'a cada ~' + Math.round(prox.media) + ' dias' : 'precisa de 3 registros'}</span></div></div>
+    <div class="grid section"><div class="card"><h3>Gasto por mês</h3><div class="chart">${vals.map((v, k) => `<div class="c"><em>${v ? Math.round(v) : ''}</em><i style="height:${v / max * 100}%"></i><small>${parseISO(meses[k] + '-01').toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '')}</small></div>`).join('')}</div></div>
+    <form class="card" id="calc-comb" onsubmit="return false"><h3 style="margin-bottom:10px">Gasolina ou etanol?</h3><div class="form" style="padding:0">
+      <label class="field"><span>Gasolina (R$/L)</span><input type="number" step="any" name="g" inputmode="decimal"></label>
+      <label class="field"><span>Etanol (R$/L)</span><input type="number" step="any" name="e" inputmode="decimal"></label>
+      <p class="wide" style="margin:0" id="calc-res"><span class="muted small">Digite os dois preços da bomba.</span></p></div></form></div>
+    <h2>Abastecimentos</h2><div class="list">${hist.map(a => { const t = c.porId[a.id], p = precoDe(a), l = litrosDe(a); return `<div class="li" data-act="editAbast" data-id="${a.id}"><div class="grow"><div class="t">${fmtData(a.data)} · ${brl(a.valor)}${a.posto ? ' · ' + esc(a.posto) : ''}</div><div class="small muted">${[COMB_LBL[a.comb], l ? num(l, 2) + ' L' : '', p ? brl(p) + '/L' : '', a.km ? num(a.km, 0) + ' km' : '', a.cheio ? 'tanque cheio' : ''].filter(Boolean).join(' · ')}</div></div>${t ? `<span class="tag ok">${num(t.kml)} km/L</span>` : ''}</div>`; }).join('') || vazio('Registre cada abastecimento: valor, preço do litro e o km do painel. Marcando "encheu o tanque", o app calcula quantos km/L o carro faz.')}</div>`;
+};
+function abrirAbast(a) {
+  const ult = [...S.abastecimentos].sort((x, y) => y.data.localeCompare(x.data))[0];
+  crud('abastecimentos', 'abastecimento', F.abast, a, { data: hoje(), comb: ult?.comb || 'gasolina', posto: ult?.posto || '', preco: ult ? +precoDe(ult).toFixed(2) || null : null, cheio: true }, {
+    antes: o => {
+      if (!(+o.valor > 0)) { toast('Informe o valor pago.'); return false; }
+      if (o.km && ult && ult !== a && +o.km < +ult.km && o.data >= ult.data) { toast(`O km está menor que o do último abastecimento (${num(ult.km, 0)}).`); return false; }
+    },
+  });
+}
+function ligarCarro() {
+  const f = $('#calc-comb'); if (!f) return;
+  f.oninput = () => {
+    const g = +f.elements.g.value, e = +f.elements.e.value, out = $('#calc-res');
+    if (!g || !e) return out.innerHTML = '<span class="muted small">Digite os dois preços da bomba.</span>';
+    const r = e / g;
+    out.innerHTML = `<b class="${r <= 0.7 ? 'pos' : 'warn'}">${r <= 0.7 ? 'Etanol compensa' : 'Gasolina compensa'}</b> <span class="muted small">(etanol custa ${num(r * 100, 0)}% da gasolina; compensa até 70%)</span>`;
+  };
+}
+
 V.musica = () => {
   const d = hoje(), prox = [];
   for (let i = 0; i <= 30; i++) { const dd = iso(addDays(new Date(), i)); for (const e of ocorrencias(dd)) if (e.cat === 'igreja' || e.cat === 'banda') prox.push([dd, e]); }
@@ -1187,6 +1274,7 @@ function render() {
   document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('active', a.dataset.r === rota));
   $('#view').innerHTML = V[rota]();
   if (rota === 'config') ligarConfig();
+  if (rota === 'carro') ligarCarro();
 }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 // atualiza relógio do painel a cada minuto (sem atrapalhar formulários abertos)
