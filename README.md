@@ -34,6 +34,7 @@ Os dados ficam só no navegador onde você usa. Em **Ajustes > Exportar backup**
 Versão hospedada no GitHub Pages, instalável pelo Safari (Compartilhar > Adicionar à Tela de Início, iOS 16.4 ou mais novo).
 - `manifest.webmanifest`, `icons/` e `sw.js` fazem o app abrir em tela cheia, funcionar offline e receber notificações.
 - Em **Ajustes > Notificações**: "Ativar notificações" mostra o "Permitir?" do iPhone. Depois marque os lembretes e toque em "Salvar e gerar código".
-- O código (`MDD1:...`) vai no secret `LEMBRETES` do repositório. A chave privada VAPID vai no secret `VAPID_PRIVATE_KEY` (a pública está em `app.js` e `servidor/enviar.mjs`).
+- A chave privada VAPID fica no secret `VAPID_PRIVATE_KEY` do repositório (a pública está em `app.js` e `servidor/enviar.mjs`).
+- O código (`MDD1:...`) é salvo cifrado em `servidor/lembretes.enc` com `servidor/cifrar.mjs` (só quem tem a chave privada lê). Também pode ir direto no secret `LEMBRETES`.
 - `.github/workflows/lembretes.yml` roda `servidor/enviar.mjs` a cada 5 minutos e envia o que estiver na hora (aceita até 30 min de atraso do agendador do GitHub). `servidor/estado.json` guarda o que já foi enviado no dia.
 - Nesta versão a sincronização com o Google Agenda não funciona (ela depende do conector do Claude).

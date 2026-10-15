@@ -1,17 +1,28 @@
 // Envia as notificações agendadas do app "Meu dia a dia".
 // Roda a cada 5 minutos no GitHub Actions. Configuração vem dos secrets:
-//   LEMBRETES          código "MDD1:..." gerado em Ajustes > Notificações no app
 //   VAPID_PRIVATE_KEY  chave privada do servidor (a pública fica em app.js)
+//   LEMBRETES          (opcional) código "MDD1:..." gerado em Ajustes > Notificações no app.
+// Sem LEMBRETES, lê servidor/lembretes.enc: o mesmo código cifrado (AES-256-GCM) com uma
+// chave derivada da VAPID_PRIVATE_KEY, para os horários não ficarem legíveis no repositório.
 import webpush from 'web-push';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, createDecipheriv } from 'node:crypto';
 
 const PUBLICA = 'BGXe3EXAwHodbQcgqXHow0tC4FKPs3QuqoYd4vNTL3LIJwQ1GXqpQrGvXoD3tItyIqNGvN9Vb6MI5_aCdX4PPso';
 const JANELA = 30; // minutos de atraso aceitos (o agendador do GitHub atrasa às vezes)
 const ESTADO = new URL('./estado.json', import.meta.url);
 
-const codigo = (process.env.LEMBRETES || '').trim();
 const privada = (process.env.VAPID_PRIVATE_KEY || '').trim();
+const CIFRADO = new URL('./lembretes.enc', import.meta.url);
+function decifrar() {
+  if (!privada || !existsSync(CIFRADO)) return '';
+  const b = Buffer.from(readFileSync(CIFRADO, 'utf8').trim(), 'base64');
+  const chave = createHash('sha256').update('lembretes:' + privada).digest();
+  const d = createDecipheriv('aes-256-gcm', chave, b.subarray(0, 12));
+  d.setAuthTag(b.subarray(b.length - 16));
+  return Buffer.concat([d.update(b.subarray(12, b.length - 16)), d.final()]).toString('utf8');
+}
+const codigo = ((process.env.LEMBRETES || '').trim() || decifrar()).trim();
 if (!codigo.startsWith('MDD1:') || !privada) { console.log('Sem configuração de lembretes; nada a fazer.'); process.exit(0); }
 const cfg = JSON.parse(Buffer.from(codigo.slice(5), 'base64').toString('utf8'));
 webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://github.com', PUBLICA, privada);
