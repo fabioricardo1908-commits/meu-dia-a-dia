@@ -31,6 +31,13 @@ App pessoal que roda no navegador, sem servidor e sem login. Os dados ficam salv
 ## Nota fiscal por foto
 Em **Feira > 📷 Ler nota fiscal**, tire uma foto do cupom (ou 2 a 3 fotos se for comprido). O Claude lê a imagem e devolve loja, data, itens, quantidades e valores; você confere numa tela de revisão (pode desmarcar, corrigir e ligar cada linha a um item do estoque ou criar um novo) e registra. Pelo link do Claude, usa o seu limite de uso do Claude (pede permissão na primeira vez). No app do GitHub Pages, cole uma chave de IA em **Ajustes > Leitura da nota fiscal**: Gemini (grátis, criada em https://aistudio.google.com/apikey) ou Claude (API da Anthropic, paga por uso). A chave fica só no aparelho (localStorage `meu-dia-a-dia:ia`) e não entra no backup.
 
+## Sincronizar aparelhos
+Em **Ajustes > Sincronizar aparelhos** (app do GitHub Pages). Usa o mesmo token do GitHub das notificações.
+- No primeiro aparelho: "Ligar a sincronização aqui". Nos outros: "Conectar outro aparelho" no primeiro, copiar o código `MDS1.` e colar no novo (o código leva o token e a chave; não compartilhe).
+- Os dados vão cifrados (AES-256-GCM, chave aleatória que só os aparelhos têm) para `dados/meu-dia.enc` no ramo `dados` (fora do `main`, para não republicar o site a cada mudança).
+- Sincroniza ao abrir, ao voltar para o app, a cada 2 minutos e logo depois de cada mudança. Cada aparelho junta as mudanças com as dos outros (merge de 3 vias por item); se os dois mudaram o mesmo item, vale a mudança mais recente.
+- A inscrição de notificações (`push`) fica só em cada aparelho. Não funciona pelo link do Claude.
+
 ## Importante: backup
 Os dados ficam só no navegador onde você usa. Em **Ajustes > Exportar backup** você baixa um arquivo `.json`; use **Importar backup** para levar tudo para outro aparelho. Limpar os dados do navegador apaga o app.
 

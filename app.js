@@ -91,9 +91,13 @@ function carregarDe(raw) {
   for (const c of ['eventos', 'tarefas', 'itens', 'compras', 'musicas', 'habilidades', 'atividades', 'freelas', 'vagas']) for (const x of (S[c] || [])) delete x.exemplo;
   for (const r of Object.values(S.ponto || {})) delete r.exemplo;
 }
-function save() {
+function salvarLocal() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Não consegui salvar no navegador!'); }
-  if (typeof agendarSync === 'function') agendarSync(); // prazos e horários mudam: mantém o servidor em dia sozinho
+}
+function save() {
+  salvarLocal();
+  agendarSync(); // prazos e horários mudam: mantém o servidor de lembretes em dia sozinho
+  agendarDados(); // e os outros aparelhos
 }
 carregar();
 
@@ -476,6 +480,19 @@ const A = {
   },
   toggleComprar: ({ id }) => { const it = byId('itens', id); it.comprar = !it.comprar; save(); render(); },
   novaFeira: () => abrirFeira(),
+  syncAgora: async (_, el) => { el.disabled = true; try { await sincronizar(); toast('Sincronizado'); } catch (e) { toast(syncStatus); } el.disabled = false; },
+  syncOutro: () => mostrarTexto('Conectar outro aparelho', codigoConexao(), '<span class="small muted">No outro aparelho: Ajustes > Sincronizar aparelhos > cole o código. Não mande para ninguém: ele dá acesso aos seus dados.</span>'),
+  syncDesligar: () => confirmar('Desligar a sincronização neste aparelho? Os dados daqui continuam aqui, mas param de ir e vir.', () => { try { localStorage.removeItem(SYNC_KEY); } catch (e) { } render(); }, 'Desligar'),
+  syncCodigo: async (_, el) => {
+    el.disabled = true; el.textContent = 'Conectando…';
+    try { await conectarComCodigo($('#sync-cod').value); render(); toast('Aparelho conectado e sincronizado'); }
+    catch (e) { try { localStorage.removeItem(SYNC_KEY); } catch (e2) { } el.disabled = false; el.textContent = 'Conectar'; const st = $('#sync-st'); if (st) { st.className = 'small neg'; st.textContent = SYNC_MSG[e.code] || syncStatus || GH_MSG[e.code] || GH_MSG.erro; } }
+  },
+  syncPrimeiro: async (_, el) => {
+    el.disabled = true; el.textContent = 'Ligando…';
+    try { await ligarPrimeiro(); render(); toast('Sincronização ligada'); }
+    catch (e) { if (e.code !== 'ja_existe') try { localStorage.removeItem(SYNC_KEY); } catch (e2) { } el.disabled = false; el.textContent = 'Ligar a sincronização aqui'; const st = $('#sync-st'); if (st) { st.className = 'small neg'; st.textContent = SYNC_MSG[e.code] || GH_MSG[e.code] || GH_MSG.erro; } }
+  },
   salvarGH: async (_, el) => {
     const token = ($('#gh-token')?.value || '').trim();
     if (!token) return toast('Cole o token do GitHub');
@@ -1109,12 +1126,13 @@ V.config = () => {
     <div class="field wide"><span>Metas semanais em horas (aparecem em "Equilíbrio da semana")</span><div class="checks">${Object.entries(CATS).map(([k, c]) => `<label class="field" style="width:140px"><span>${c.n}</span><input type="number" step="0.5" min="0" name="m_${k}" value="${s.metas?.[k] ?? ''}"></label>`).join('')}</div></div>
     <div class="form-actions"><span class="sp"></span><button class="btn primary">Salvar ajustes</button></div></div></form>
     ${lembretesHTML()}
+    ${syncHTML()}
     ${iaHTML()}
     <div class="card section"><h3 style="margin-bottom:6px">Backup dos dados</h3><p class="muted small">Seus dados ficam salvos só neste navegador. Exporte um backup de vez em quando e importe para usar em outro aparelho.</p>
     <div class="btns"><button class="btn primary" data-act="exportar">Exportar backup</button><button class="btn" data-act="importar">Importar backup</button><button class="btn danger" data-act="apagarTudo">Apagar tudo</button></div></div>`;
 };
 function ligarConfig() {
-  ligarLembretes(); ligarIA();
+  ligarLembretes(); ligarIA(); atualizarSyncUI();
   const f = $('#cfg'); if (!f) return;
   f.onsubmit = e => {
     e.preventDefault();
@@ -1287,6 +1305,132 @@ async function sincronizarLembretes(forcar) {
 }
 let ghTimer = null;
 function agendarSync() { if (window.claude || !ghCfg().token) return; clearTimeout(ghTimer); ghTimer = setTimeout(() => sincronizarLembretes(false).catch(() => { }), 4000); }
+// ================= sincronização entre aparelhos =================
+// Os dados vão cifrados (AES-GCM, chave que só os seus aparelhos têm) para o ramo "dados" do repositório,
+// pelo mesmo token do GitHub dos lembretes. Cada aparelho junta as mudanças dele com as dos outros (merge de 3 vias).
+const SYNC_KEY = 'meu-dia-a-dia:sync', SYNC_RAMO = 'dados', SYNC_ARQ = 'dados/meu-dia.enc';
+const SO_NESTE_APARELHO = ['push']; // a inscrição de notificações é de cada aparelho
+const syncCfg = () => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch (e) { return {}; } };
+const setSyncCfg = o => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(o)); } catch (e) { } };
+const b64Bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const igual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const objPuro = x => x && typeof x === 'object' && !Array.isArray(x);
+const listaComId = x => Array.isArray(x) && x.every(i => objPuro(i) && i.id != null);
+// junta base (último estado em comum), local e remoto; quando os dois mudaram a mesma coisa, vale o local (prefLocal) ou o remoto
+function juntar(b, l, r, prefLocal) {
+  if (igual(l, r)) return l;
+  if (igual(b, l)) return r;
+  if (igual(b, r)) return l;
+  if (objPuro(l) && objPuro(r)) {
+    const o = {};
+    for (const k of new Set([...Object.keys(r), ...Object.keys(l)])) { const v = juntar(objPuro(b) ? b[k] : undefined, l[k], r[k], prefLocal); if (v !== undefined) o[k] = v; }
+    return o;
+  }
+  if (listaComId(l) && listaComId(r)) {
+    const m = a => new Map((listaComId(a) ? a : []).map(i => [String(i.id), i])), bm = m(b), lm = m(l), rm = m(r), out = [];
+    for (const id of new Set([...rm.keys(), ...lm.keys()])) { const v = juntar(bm.get(id), lm.get(id), rm.get(id), prefLocal); if (v !== undefined) out.push(v); }
+    return out;
+  }
+  return prefLocal ? l : r;
+}
+const semLocais = o => { const c = JSON.parse(JSON.stringify(o)); for (const k of SO_NESTE_APARELHO) delete c[k]; return c; };
+async function chaveDados(b64) { return crypto.subtle.importKey('raw', b64Bytes(b64), 'AES-GCM', false, ['encrypt', 'decrypt']); }
+async function cifrarDados(obj, k) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await chaveDados(k), new TextEncoder().encode(JSON.stringify(obj))));
+  const t = new Uint8Array(12 + ct.length); t.set(iv); t.set(ct, 12); return 'D1:' + bytesB64(t);
+}
+async function decifrarDados(txt, k) {
+  const t = b64Bytes(txt.trim().replace(/^D1:/, ''));
+  try { return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: t.subarray(0, 12) }, await chaveDados(k), t.subarray(12)))); }
+  catch (e) { throw { code: 'chave_dados' }; }
+}
+async function lerRemoto() {
+  const j = await ghApi(`contents/${SYNC_ARQ}?ref=${SYNC_RAMO}`, { ok404: true });
+  if (!j) return null;
+  let txt = j.content ? new TextDecoder().decode(b64Bytes(j.content.replace(/\s/g, ''))) : await (await fetch(j.download_url, { cache: 'no-store' })).text();
+  return { sha: j.sha, txt };
+}
+async function garantirRamo() {
+  if (await ghApi(`git/ref/heads/${SYNC_RAMO}`, { ok404: true })) return;
+  const main = await ghApi('git/ref/heads/main');
+  await ghApi('git/refs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: 'refs/heads/' + SYNC_RAMO, sha: main.object.sha }) });
+}
+let sincronizando = null, syncStatus = '';
+function sincronizar() {
+  const cfg = syncCfg();
+  if (window.claude || !cfg.chave || !ghCfg().token) return Promise.resolve(false);
+  if (sincronizando) return sincronizando;
+  sincronizando = (async () => {
+    try {
+      for (let tent = 0; tent < 3; tent++) {
+        const c = syncCfg(), rem = await lerRemoto(), local = semLocais(S), base = c.base ? JSON.parse(c.base) : undefined;
+        const remObj = !rem ? null : rem.sha === c.sha && base ? base : await decifrarDados(rem.txt, c.chave);
+        const junto = remObj ? juntar(base, local, remObj, base !== undefined) : local;
+        if (!igual(junto, local)) {
+          const meus = Object.fromEntries(SO_NESTE_APARELHO.map(k => [k, S[k]]));
+          S = Object.assign(junto, meus); carregarDe(S); salvarLocal();
+          if (!dlg.open && !$('#dlg2').open && !document.activeElement?.matches?.('input,textarea,select')) render();
+        }
+        let sha = rem && rem.sha;
+        if (!remObj || !igual(junto, remObj)) {
+          if (!rem) await garantirRamo();
+          try {
+            const r = await ghApi(`contents/${SYNC_ARQ}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Dados do app (sincronização)', content: btoa(await cifrarDados(junto, c.chave)), branch: SYNC_RAMO, ...(sha ? { sha } : {}) }) });
+            sha = r.content.sha;
+          } catch (e) { if ((e.code === 'conflito' || e.status === 422) && tent < 2) continue; throw e; }
+        }
+        setSyncCfg({ ...syncCfg(), base: JSON.stringify(junto), sha, em: new Date().toISOString() });
+        syncStatus = ''; atualizarSyncUI(); return true;
+      }
+    } catch (e) {
+      syncStatus = e.code === 'chave_dados' ? 'Os dados no GitHub são de outra chave. Conecte este aparelho com o código de outro aparelho.' : GH_MSG[e.code] || GH_MSG.erro;
+      atualizarSyncUI(); throw e;
+    } finally { sincronizando = null; }
+  })();
+  return sincronizando;
+}
+let syncTimer = null;
+function agendarDados() { if (window.claude || !syncCfg().chave) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => sincronizar().catch(() => { }), 2500); }
+const codigoConexao = () => 'MDS1.' + btoa(JSON.stringify({ t: ghCfg().token, k: syncCfg().chave })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function conectarComCodigo(txt) {
+  const m = String(txt || '').match(/MDS1\.([A-Za-z0-9_-]+)/);
+  if (!m) throw { code: 'codigo' };
+  let o; try { o = JSON.parse(atob(m[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch (e) { throw { code: 'codigo' }; }
+  if (!o.t || !o.k) throw { code: 'codigo' };
+  try { localStorage.setItem(GH_KEY, JSON.stringify({ token: o.t })); localStorage.removeItem(GH_ULT); } catch (e) { }
+  setSyncCfg({ chave: o.k }); // sem base: na primeira vez vale o que está no GitHub, e o que só existe aqui é somado
+  await sincronizar();
+}
+async function ligarPrimeiro() {
+  if (await lerRemoto()) throw { code: 'ja_existe' };
+  setSyncCfg({ chave: bytesB64(crypto.getRandomValues(new Uint8Array(32))) });
+  await sincronizar();
+}
+function atualizarSyncUI() {
+  const el = $('#sync-st'); if (!el) return;
+  const c = syncCfg();
+  el.className = 'small ' + (syncStatus ? 'neg' : 'muted');
+  el.textContent = syncStatus || (c.em ? `Última sincronização: ${new Date(c.em).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : '');
+}
+function syncHTML() {
+  if (window.claude) return `<div class="card section"><h3 style="margin-bottom:6px">Sincronizar aparelhos</h3><p class="small muted" style="margin:0">A sincronização funciona no app do GitHub (fabioricardo1908-commits.github.io/meu-dia-a-dia). Por este link do Claude os dados ficam só aqui.</p></div>`;
+  const c = syncCfg(), tk = ghCfg().token;
+  if (c.chave && tk) return `<div class="card section" id="sync"><h3 style="margin-bottom:6px">Sincronizar aparelhos <span class="tag ok">ligado</span></h3>
+    <p class="small" style="margin:0 0 8px">Tudo o que você muda aqui vai para os outros aparelhos sozinho, e o que muda lá aparece aqui quando você abre o app.</p>
+    <p id="sync-st" class="small muted" style="margin:0 0 10px"></p>
+    <div class="btns"><button type="button" class="btn" data-act="syncAgora">Sincronizar agora</button><button type="button" class="btn primary" data-act="syncOutro">Conectar outro aparelho</button><button type="button" class="btn danger" data-act="syncDesligar">Desligar</button></div></div>`;
+  return `<div class="card section" id="sync"><h3 style="margin-bottom:6px">Sincronizar aparelhos</h3>
+    <p class="small" style="margin:0 0 10px">Deixe iPhone, computador e outros aparelhos sempre com os mesmos dados. Eles ficam guardados cifrados no seu GitHub.</p>
+    <b class="small">Já usa a sincronização em outro aparelho?</b>
+    <p class="small muted" style="margin:2px 0 6px">Lá, em Ajustes, toque em "Conectar outro aparelho", copie o código e cole aqui.</p>
+    <div class="gh-linha"><input id="sync-cod" autocomplete="off" placeholder="MDS1...."><button type="button" class="btn primary" data-act="syncCodigo">Conectar</button></div>
+    <b class="small" style="display:block;margin-top:14px">É o primeiro aparelho?</b>
+    ${tk ? `<p class="small muted" style="margin:2px 0 6px">Os dados deste aparelho viram a base para os outros.</p><button type="button" class="btn" data-act="syncPrimeiro">Ligar a sincronização aqui</button>`
+      : `<p class="small muted" style="margin:2px 0 0">Primeiro ligue ao GitHub no card de Notificações acima (o mesmo token serve para os dois).</p>`}
+    <p id="sync-st" class="small neg" style="margin:8px 0 0"></p></div>`;
+}
+const SYNC_MSG = { codigo: 'Código inválido. Copie de novo o código inteiro do outro aparelho.', ja_existe: 'Já existem dados de outro aparelho no GitHub. Use o código de conexão de lá.' };
 function ghHTML() {
   if (ghCfg().token) return `<p class="small" style="margin:10px 0 0">🔗 Ligado ao GitHub: ao salvar, os avisos passam a valer sozinhos em até 5 minutos. <button type="button" class="mini" data-act="desligarGH">desligar</button></p>`;
   const novo = 'https://github.com/settings/personal-access-tokens/new?name=Meu+dia+a+dia+-+lembretes&description=App+grava+os+lembretes&contents=write';
@@ -1391,6 +1535,10 @@ if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'ht
 }
 var recarregou = false;
 setTimeout(() => sincronizarLembretes(false).catch(() => { }), 3000); // prazos do dia
+// traz o que mudou nos outros aparelhos: ao abrir, ao voltar para o app e a cada 2 minutos com ele aberto
+setTimeout(() => sincronizar().catch(() => { }), 800);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sincronizar().catch(() => { }); });
+setInterval(() => { if (document.visibilityState === 'visible') sincronizar().catch(() => { }); }, 120000);
 // Google Agenda: só funciona quando o app é aberto pelo Claude (conector do Google Agenda)
 // Nota fiscal por foto: só quando o app é aberto pelo Claude
 (async () => {
