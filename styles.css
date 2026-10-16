@@ -152,3 +152,8 @@ body{font-variant-numeric:tabular-nums}
 .seg button{flex:1;border:0;background:transparent;color:var(--text);font:inherit;padding:9px 6px;border-radius:9px;cursor:pointer;white-space:nowrap}
 .seg button.on{background:var(--primary);color:var(--primary-text);font-weight:600}
 :root[data-theme="light"]{color-scheme:light}
+body.travado .app{display:none}
+#trava{position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px max(16px,env(safe-area-inset-left,0px));overflow:auto}
+.trava-box{width:min(360px,100%);background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:24px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:10px}
+.trava-box h1{text-align:center;margin:0}.trava-box>p{text-align:center}
+.trava-ico{font-size:2.6rem;text-align:center}

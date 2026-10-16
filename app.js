@@ -1134,6 +1134,7 @@ V.config = () => {
   return head('Ajustes', 'Aparência, jornada, metas e backup') +
     `<div class="card section"><h3 style="margin-bottom:10px">Aparência</h3><div class="seg" role="radiogroup" aria-label="Tema">${[['auto', '🌓 Automático'], ['light', '☀️ Claro'], ['dark', '🌙 Escuro']].map(([k, l]) => `<button type="button" role="radio" aria-checked="${tema === k}" class="${tema === k ? 'on' : ''}" data-act="tema" data-t="${k}">${l}</button>`).join('')}</div>
     <p class="small muted" style="margin:8px 0 0">Automático segue o modo claro/escuro do seu aparelho.</p></div>` +
+    travaHTML() +
     `<form class="card section" id="cfg"><div class="form" style="padding:0">
     <label class="field"><span>Seu nome</span><input name="nome" value="${esc(s.nome)}"></label>
     <label class="field"><span>Saldo inicial do banco de horas (hh:mm, use - se negativo)</span><input name="saldoInicial" value="${minToHHMM(+s.saldoInicial || 0)}" placeholder="00:00"></label>
@@ -1148,7 +1149,91 @@ V.config = () => {
     <div class="card section"><h3 style="margin-bottom:6px">Backup dos dados</h3><p class="muted small">Seus dados ficam salvos só neste navegador. Exporte um backup de vez em quando e importe para usar em outro aparelho.</p>
     <div class="btns"><button class="btn primary" data-act="exportar">Exportar backup</button><button class="btn" data-act="importar">Importar backup</button><button class="btn danger" data-act="apagarTudo">Apagar tudo</button></div></div>`;
 };
+// ================= bloqueio com usuário e senha =================
+// A senha nunca é guardada: só um hash PBKDF2 (com sal) em S.settings.trava, que também vai para os outros aparelhos.
+const TRAVA_SESS = 'meu-dia-a-dia:aberto', TRAVA_MIN = 5; // volta a pedir senha depois de 5 min fora do app
+async function hashSenha(usuario, senha, salB64) {
+  const mat = await crypto.subtle.importKey('raw', new TextEncoder().encode(usuario.trim().toLowerCase() + '\n' + senha), 'PBKDF2', false, ['deriveBits']);
+  return bytesB64(new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: b64Bytes(salB64), iterations: 150000, hash: 'SHA-256' }, mat, 256)));
+}
+const travaLigada = () => !!(S.settings.trava && S.settings.trava.hash);
+let destravado = false;
+try { destravado = sessionStorage.getItem(TRAVA_SESS) === '1'; } catch (e) { }
+function mostrarTrava() {
+  if (!travaLigada() || destravado) { document.body.classList.remove('travado'); $('#trava')?.remove(); return false; }
+  document.body.classList.add('travado');
+  if (dlg.open) dlg.close(); if ($('#dlg2').open) $('#dlg2').close();
+  if ($('#trava')) return true;
+  const el = document.createElement('div'); el.id = 'trava';
+  el.innerHTML = `<form class="trava-box" autocomplete="on"><div class="trava-ico">🔒</div><h1>Meu dia a dia</h1><p class="muted" style="margin:0 0 16px">Entre para continuar</p>
+    <label class="field"><span>Usuário</span><input name="usuario" autocomplete="username" autocapitalize="none" required></label>
+    <label class="field"><span>Senha</span><input name="senha" type="password" autocomplete="current-password" required></label>
+    <p class="small neg" id="trava-erro" style="margin:8px 0 0;min-height:1.2em"></p>
+    <button class="btn primary block">Entrar</button>
+    <button type="button" class="btn ghost block small" data-esqueci style="margin-top:6px">Esqueci a senha</button></form>`;
+  document.body.appendChild(el);
+  const f = el.querySelector('form');
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const t = S.settings.trava, btn = f.querySelector('.primary'); btn.disabled = true;
+    const ok = f.usuario.value.trim().toLowerCase() === t.usuario.toLowerCase() && await hashSenha(f.usuario.value, f.senha.value, t.sal) === t.hash;
+    btn.disabled = false;
+    if (!ok) { $('#trava-erro').textContent = 'Usuário ou senha incorretos.'; f.senha.value = ''; f.senha.focus(); return; }
+    destravado = true; try { sessionStorage.setItem(TRAVA_SESS, '1'); } catch (e2) { }
+    mostrarTrava(); render();
+  };
+  el.querySelector('[data-esqueci]').onclick = () => {
+    $('#trava-erro').textContent = '';
+    const p = document.createElement('div'); p.className = 'trava-box small'; p.style.marginTop = '12px';
+    p.innerHTML = `<p style="margin:0 0 8px">A senha não pode ser recuperada. Para entrar de novo, é preciso <b>apagar os dados deste aparelho</b>. Se a sincronização estiver ligada, depois conecte este aparelho com o código de outro e tudo volta (inclusive a senha antiga). Sem sincronização, só um backup recupera os dados.</p><button type="button" class="btn danger-bg block">Apagar dados deste aparelho</button>`;
+    p.querySelector('button').onclick = () => { if (p.dataset.ok) { try { localStorage.clear(); sessionStorage.clear(); } catch (e) { } location.reload(); } else { p.dataset.ok = 1; p.querySelector('button').textContent = 'Toque de novo para confirmar'; } };
+    el.querySelector('[data-esqueci]').replaceWith(p);
+  };
+  setTimeout(() => f.usuario.focus(), 50);
+  return true;
+}
+// fora do app por mais de 5 minutos: pede a senha de novo
+let saiuEm = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saiuEm = Date.now();
+  else if (travaLigada() && destravado && saiuEm && Date.now() - saiuEm > TRAVA_MIN * 60e3) { destravado = false; try { sessionStorage.removeItem(TRAVA_SESS); } catch (e) { } mostrarTrava(); }
+});
+function travaHTML() {
+  const t = S.settings.trava;
+  return `<form class="card section" id="trava-cfg"><h3 style="margin-bottom:6px">Bloqueio com senha ${t ? '<span class="tag ok">ligado</span>' : ''}</h3>
+    <p class="small muted" style="margin:0 0 10px">${t ? `Usuário: <b>${esc(t.usuario)}</b>. O app pede a senha ao abrir e depois de ${TRAVA_MIN} minutos fora dele. Com a sincronização ligada, vale para todos os aparelhos.` : 'O app passa a pedir usuário e senha ao abrir. Com a sincronização ligada, vale para todos os aparelhos.'}</p>
+    <div class="form" style="padding:0">
+    ${t ? `<label class="field"><span>Senha atual</span><input name="atual" type="password" autocomplete="current-password"></label>` : ''}
+    <label class="field"><span>${t ? 'Novo usuário' : 'Usuário'}</span><input name="usuario" autocomplete="username" autocapitalize="none" value="${t ? esc(t.usuario) : ''}"></label>
+    <label class="field"><span>${t ? 'Nova senha' : 'Senha'}</span><input name="senha" type="password" autocomplete="new-password" minlength="4"></label>
+    <label class="field"><span>Repita a senha</span><input name="senha2" type="password" autocomplete="new-password"></label>
+    <p class="wide small neg" id="trava-msg" style="margin:0"></p>
+    <div class="form-actions">${t ? '<button type="button" class="btn danger" data-tirar>Tirar o bloqueio</button>' : ''}<span class="sp"></span><button class="btn primary">${t ? 'Trocar usuário/senha' : 'Ligar bloqueio'}</button></div></div></form>`;
+}
+function ligarTravaCfg() {
+  const f = $('#trava-cfg'); if (!f) return;
+  const msg = t => { $('#trava-msg').textContent = t; };
+  const confereAtual = async () => { const t = S.settings.trava; return !t || await hashSenha(t.usuario, f.atual.value, t.sal) === t.hash; };
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const u = f.usuario.value.trim(), s1 = f.senha.value, s2 = f.senha2.value;
+    if (!u) return msg('Escolha um usuário.');
+    if (s1.length < 4) return msg('A senha precisa ter pelo menos 4 caracteres.');
+    if (s1 !== s2) return msg('As duas senhas não são iguais.');
+    if (!await confereAtual()) return msg('A senha atual está errada.');
+    const sal = bytesB64(crypto.getRandomValues(new Uint8Array(16)));
+    S.settings.trava = { usuario: u, sal, hash: await hashSenha(u, s1, sal) };
+    destravado = true; try { sessionStorage.setItem(TRAVA_SESS, '1'); } catch (e2) { }
+    save(); render(); toast('Bloqueio ligado. Guarde bem a senha!');
+  };
+  const tirar = f.querySelector('[data-tirar]');
+  if (tirar) tirar.onclick = async () => {
+    if (!await confereAtual()) return msg('Digite a senha atual para tirar o bloqueio.');
+    delete S.settings.trava; save(); render(); toast('Bloqueio desligado');
+  };
+}
 function ligarConfig() {
+  ligarTravaCfg();
   ligarLembretes(); ligarIA(); atualizarSyncUI();
   const f = $('#cfg'); if (!f) return;
   f.onsubmit = e => {
@@ -1532,6 +1617,7 @@ function ligarLembretes() {
 
 // ================= roteamento =================
 function render() {
+  if (mostrarTrava()) return;
   const r = (location.hash.replace('#/', '') || 'painel');
   const rota = V[r] ? r : 'painel';
   document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('active', a.dataset.r === rota));
