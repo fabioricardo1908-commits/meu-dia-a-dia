@@ -148,3 +148,7 @@ body{font-variant-numeric:tabular-nums}
 .gh-box{margin-top:12px;padding:12px;border-radius:10px;background:var(--surface2)}
 .gh-box ol li{margin-bottom:3px}
 .gh-linha{display:flex;gap:8px}.gh-linha input{flex:1;min-width:0}
+.seg{display:flex;gap:4px;padding:4px;background:var(--surface2);border-radius:12px}
+.seg button{flex:1;border:0;background:transparent;color:var(--text);font:inherit;padding:9px 6px;border-radius:9px;cursor:pointer;white-space:nowrap}
+.seg button.on{background:var(--primary);color:var(--primary-text);font-weight:600}
+:root[data-theme="light"]{color-scheme:light}

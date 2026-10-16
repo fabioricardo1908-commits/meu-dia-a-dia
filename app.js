@@ -57,6 +57,19 @@ function confirmar(msg, sim, rotulo = 'Confirmar') {
   d.showModal();
 }
 
+// ================= tema (claro/escuro) =================
+// fica em cada aparelho: 'auto' segue o iPhone/computador
+const TEMA_KEY = 'meu-dia-a-dia:tema';
+const temaAtual = () => { try { return localStorage.getItem(TEMA_KEY) || 'auto'; } catch (e) { return 'auto'; } };
+function aplicarTema(t = temaAtual()) {
+  const r = document.documentElement;
+  if (t === 'auto') r.removeAttribute('data-theme'); else r.setAttribute('data-theme', t);
+  const escuro = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', escuro ? '#12131a' : '#4f46e5');
+}
+aplicarTema();
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => aplicarTema());
+
 // ================= dados =================
 const KEY = 'meu-dia-a-dia:v1';
 const CATS = {
@@ -480,6 +493,7 @@ const A = {
   },
   toggleComprar: ({ id }) => { const it = byId('itens', id); it.comprar = !it.comprar; save(); render(); },
   novaFeira: () => abrirFeira(),
+  tema: ({ t }) => { try { localStorage.setItem(TEMA_KEY, t); } catch (e) { } aplicarTema(t); render(); },
   syncAgora: async (_, el) => { el.disabled = true; try { await sincronizar(); toast('Sincronizado'); } catch (e) { toast(syncStatus); } el.disabled = false; },
   syncOutro: () => mostrarTexto('Conectar outro aparelho', codigoConexao(), '<span class="small muted">No outro aparelho: Ajustes > Sincronizar aparelhos > cole o código. Não mande para ninguém: ele dá acesso aos seus dados.</span>'),
   syncDesligar: () => confirmar('Desligar a sincronização neste aparelho? Os dados daqui continuam aqui, mas param de ir e vir.', () => { try { localStorage.removeItem(SYNC_KEY); } catch (e) { } render(); }, 'Desligar'),
@@ -1116,7 +1130,10 @@ V.vagas = () => {
 
 V.config = () => {
   const s = S.settings;
-  return head('Ajustes', 'Jornada, metas e backup') +
+  const tema = temaAtual();
+  return head('Ajustes', 'Aparência, jornada, metas e backup') +
+    `<div class="card section"><h3 style="margin-bottom:10px">Aparência</h3><div class="seg" role="radiogroup" aria-label="Tema">${[['auto', '🌓 Automático'], ['light', '☀️ Claro'], ['dark', '🌙 Escuro']].map(([k, l]) => `<button type="button" role="radio" aria-checked="${tema === k}" class="${tema === k ? 'on' : ''}" data-act="tema" data-t="${k}">${l}</button>`).join('')}</div>
+    <p class="small muted" style="margin:8px 0 0">Automático segue o modo claro/escuro do seu aparelho.</p></div>` +
     `<form class="card section" id="cfg"><div class="form" style="padding:0">
     <label class="field"><span>Seu nome</span><input name="nome" value="${esc(s.nome)}"></label>
     <label class="field"><span>Saldo inicial do banco de horas (hh:mm, use - se negativo)</span><input name="saldoInicial" value="${minToHHMM(+s.saldoInicial || 0)}" placeholder="00:00"></label>
