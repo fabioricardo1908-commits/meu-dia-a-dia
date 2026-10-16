@@ -24,10 +24,11 @@ jobs:
           VAPID_SUBJECT: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
       - name: Guardar o que já foi enviado
         run: |
-          if [ -n "$(git status --porcelain servidor/estado.json)" ]; then
+          if [ -n "$(git status --porcelain servidor/estado.json servidor/status.json)" ]; then
             git config user.name "lembretes-bot"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add servidor/estado.json
+            git add servidor/estado.json servidor/status.json
             git commit -m "Lembretes enviados"
+            git pull --rebase origin main
             git push
           fi

@@ -2,11 +2,13 @@
 // Roda a cada 5 minutos no GitHub Actions. Configuração vem dos secrets:
 //   VAPID_PRIVATE_KEY  chave privada do servidor (a pública fica em app.js)
 //   LEMBRETES          (opcional) código "MDD1:..." gerado em Ajustes > Notificações no app.
-// Sem LEMBRETES, lê servidor/lembretes.enc: o mesmo código cifrado (AES-256-GCM) com uma
-// chave derivada da VAPID_PRIVATE_KEY, para os horários não ficarem legíveis no repositório.
+// Sem LEMBRETES, lê servidor/lembretes.enc, gravado pelo próprio app ao salvar as notificações.
+// Formato "E1:": o app cifra com a chave PÚBLICA VAPID (ECDH P-256 + AES-256-GCM); só a privada abre.
+// Formato antigo (sem prefixo): AES-256-GCM com chave sha256('lembretes:' + privada), de servidor/cifrar.mjs.
+// Grava servidor/status.json (sem dados pessoais) para o app mostrar se o servidor está funcionando.
 import webpush from 'web-push';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { createHash, createDecipheriv } from 'node:crypto';
+import { createHash, createDecipheriv, createECDH } from 'node:crypto';
 
 const PUBLICA = 'BGXe3EXAwHodbQcgqXHow0tC4FKPs3QuqoYd4vNTL3LIJwQ1GXqpQrGvXoD3tItyIqNGvN9Vb6MI5_aCdX4PPso';
 const JANELA = 30; // minutos de atraso aceitos (o agendador do GitHub atrasa às vezes)
@@ -14,16 +16,34 @@ const ESTADO = new URL('./estado.json', import.meta.url);
 
 const privada = (process.env.VAPID_PRIVATE_KEY || '').trim();
 const CIFRADO = new URL('./lembretes.enc', import.meta.url);
+const STATUS = new URL('./status.json', import.meta.url);
+let status = { chave: !!privada, config: false, inscricao: null, erro: null };
+function gravarStatus() {
+  const antes = existsSync(STATUS) ? readFileSync(STATUS, 'utf8') : '';
+  const novo = JSON.stringify({ ...(antes ? JSON.parse(antes) : {}), ...status }, null, 1) + '\n';
+  if (novo !== antes) writeFileSync(STATUS, novo);
+}
 function decifrar() {
   if (!privada || !existsSync(CIFRADO)) return '';
-  const b = Buffer.from(readFileSync(CIFRADO, 'utf8').trim(), 'base64');
-  const chave = createHash('sha256').update('lembretes:' + privada).digest();
+  const txt = readFileSync(CIFRADO, 'utf8').trim();
+  let b, chave;
+  if (txt.startsWith('E1:')) {
+    const t = Buffer.from(txt.slice(3), 'base64'), ec = createECDH('prime256v1');
+    ec.setPrivateKey(Buffer.from(privada, 'base64url'));
+    chave = createHash('sha256').update(Buffer.concat([Buffer.from('lembretes:'), ec.computeSecret(t.subarray(0, 65))])).digest();
+    b = t.subarray(65);
+  } else {
+    b = Buffer.from(txt, 'base64');
+    chave = createHash('sha256').update('lembretes:' + privada).digest();
+  }
   const d = createDecipheriv('aes-256-gcm', chave, b.subarray(0, 12));
   d.setAuthTag(b.subarray(b.length - 16));
   return Buffer.concat([d.update(b.subarray(12, b.length - 16)), d.final()]).toString('utf8');
 }
-const codigo = ((process.env.LEMBRETES || '').trim() || decifrar()).trim();
-if (!codigo.startsWith('MDD1:') || !privada) { console.log('Sem configuração de lembretes; nada a fazer.'); process.exit(0); }
+let codigo = (process.env.LEMBRETES || '').trim();
+if (!codigo) try { codigo = decifrar().trim(); } catch (e) { status.erro = 'nao_decifrou'; console.error('Não consegui abrir servidor/lembretes.enc:', e.message); }
+if (!codigo.startsWith('MDD1:') || !privada) { gravarStatus(); console.log(privada ? 'Sem configuração de lembretes; nada a fazer.' : 'Falta o secret VAPID_PRIVATE_KEY.'); process.exit(0); }
+status.config = true; status.erro = null;
 const cfg = JSON.parse(Buffer.from(codigo.slice(5), 'base64').toString('utf8'));
 webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://github.com', PUBLICA, privada);
 
@@ -55,12 +75,14 @@ for (const [h, titulo, texto, url] of avisos) {
   if (enviados.has(chave)) continue;
   try {
     await webpush.sendNotification(cfg.sub, JSON.stringify({ title: titulo, body: texto, url, tag: chave }), { TTL: 3600 });
-    console.log('Enviado:', h);
+    console.log('Enviado:', h); status.inscricao = 'ok'; status.ultimoEnvio = new Date().toISOString();
   } catch (e) {
     console.error('Falha ao enviar', h, e.statusCode || '', e.body || e.message);
+    if (e.statusCode === 404 || e.statusCode === 410) status.inscricao = 'expirada';
     if (e.statusCode === 404 || e.statusCode === 410) console.error('A inscrição expirou: ative de novo as notificações no app e envie um novo código.');
     continue;
   }
   enviados.add(chave); mudou = true;
 }
+gravarStatus();
 if (mudou) writeFileSync(ESTADO, JSON.stringify({ enviados: [...enviados] }, null, 1) + '\n');

@@ -145,3 +145,6 @@ body{font-variant-numeric:tabular-nums}
 .tile small{color:var(--muted);font-size:.78rem;line-height:1.25}
 @media (max-width:720px){.tiles{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.tile{min-height:112px;padding:12px 6px;border-radius:14px}.tile .ico{font-size:2.2rem}.tile b{font-size:.88rem}.tile small{font-size:.7rem}}
 @media (max-width:360px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.gh-box{margin-top:12px;padding:12px;border-radius:10px;background:var(--surface2)}
+.gh-box ol li{margin-bottom:3px}
+.gh-linha{display:flex;gap:8px}.gh-linha input{flex:1;min-width:0}

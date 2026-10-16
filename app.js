@@ -93,6 +93,7 @@ function carregarDe(raw) {
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Não consegui salvar no navegador!'); }
+  if (typeof agendarSync === 'function') agendarSync(); // prazos e horários mudam: mantém o servidor em dia sozinho
 }
 carregar();
 
@@ -475,6 +476,19 @@ const A = {
   },
   toggleComprar: ({ id }) => { const it = byId('itens', id); it.comprar = !it.comprar; save(); render(); },
   novaFeira: () => abrirFeira(),
+  salvarGH: async (_, el) => {
+    const token = ($('#gh-token')?.value || '').trim();
+    if (!token) return toast('Cole o token do GitHub');
+    el.disabled = true; el.textContent = 'Conferindo…';
+    try {
+      const repo = await ghApi('', {}, token);
+      if (repo && repo.permissions && repo.permissions.push === false) throw { code: 'permissao' };
+      try { localStorage.setItem(GH_KEY, JSON.stringify({ token })); localStorage.removeItem(GH_ULT); } catch (e) { }
+      render(); toast('GitHub ligado!');
+      if (S.push && S.push.sub) { const st = $('#l-status'); try { await sincronizarLembretes(true); if (st) { st.className = 'small pos'; st.textContent = 'Avisos salvos no servidor. Passam a valer em até 5 minutos.'; } } catch (err) { if (st) { st.className = 'small neg'; st.textContent = GH_MSG[err && err.code] || GH_MSG.erro; } } }
+    } catch (err) { el.disabled = false; el.textContent = 'Ligar'; toast(GH_MSG[err && err.code] || GH_MSG.erro); }
+  },
+  desligarGH: () => confirmar('Desligar do GitHub neste aparelho? Os avisos já salvos continuam chegando, mas mudanças novas não serão enviadas.', () => { try { localStorage.removeItem(GH_KEY); localStorage.removeItem(GH_ULT); } catch (e) { } render(); }, 'Desligar'),
   novoAbast: () => abrirAbast(null),
   editAbast: ({ id }) => abrirAbast(byId('abastecimentos', id)),
   lerNota: () => lerNota(),
@@ -1194,9 +1208,10 @@ function lembretesHTML() {
     ? '<button type="button" class="btn" data-act="testarPush">Enviar notificação de teste</button><button type="button" class="btn danger" data-act="desativarPush">Desativar neste aparelho</button>'
     : perm === 'denied' ? '' : '<button type="button" class="btn primary" data-act="ativarPush">Ativar notificações</button>'}</div>
   ${lembTogglesHTML(L)}
-  <p class="small muted" style="margin:10px 0 0">Ao salvar, o app gera um código com seus horários. Envie esse código para o Claude no projeto para os avisos começarem (ou mudarem). Sem o código, nada é enviado.</p>
+  ${ghHTML()}
+  <p class="small" id="srv-status" style="margin:8px 0 0"></p>
   <p class="small muted" id="l-status" style="margin:6px 0 0"></p>
-  <div class="form-actions"><span class="sp"></span><button class="btn primary" ${ativo ? '' : 'disabled'}>Salvar e gerar código</button></div></form>`;
+  <div class="form-actions"><span class="sp"></span><button class="btn primary" ${ativo ? '' : 'disabled'}>Salvar notificações</button></div></form>`;
 }
 function b64urlParaBytes(b64) {
   const pad = '='.repeat((4 - b64.length % 4) % 4), bin = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
@@ -1219,6 +1234,86 @@ async function desativarPush() {
 async function testarPush() {
   try { const reg = await navigator.serviceWorker.ready; await reg.showNotification('Meu dia a dia', { body: 'As notificações estão funcionando ✅', icon: 'icons/icon-192.png' }); }
   catch (e) { toast('Não consegui mostrar: ' + (e.message || e)); }
+}
+// ---- lembretes salvos direto no GitHub (app instalado) ----
+// O app cifra a configuração com a chave PÚBLICA do servidor (ECDH P-256 + AES-GCM) e grava
+// servidor/lembretes.enc no repositório com um token do Fábio (guardado só neste aparelho).
+const GH_KEY = 'meu-dia-a-dia:gh', GH_ULT = 'meu-dia-a-dia:gh-ult';
+const ghCfg = () => { try { return JSON.parse(localStorage.getItem(GH_KEY)) || {}; } catch (e) { return {}; } };
+const ghRepo = () => /\.github\.io$/.test(location.hostname) ? `${location.hostname.split('.')[0]}/${location.pathname.split('/')[1]}` : 'fabioricardo1908-commits/meu-dia-a-dia';
+const bytesB64 = u => { let s = ''; for (const b of u) s += String.fromCharCode(b); return btoa(s); };
+async function cifrarParaServidor(texto) {
+  const pub = await crypto.subtle.importKey('raw', b64urlParaBytes(PUSH_PUBLIC), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ef = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const seg = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, ef.privateKey, 256));
+  const pre = new TextEncoder().encode('lembretes:'), mat = new Uint8Array(pre.length + seg.length); mat.set(pre); mat.set(seg, pre.length);
+  const chave = await crypto.subtle.importKey('raw', await crypto.subtle.digest('SHA-256', mat), 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, chave, new TextEncoder().encode(texto)));
+  const efPub = new Uint8Array(await crypto.subtle.exportKey('raw', ef.publicKey));
+  const tudo = new Uint8Array(65 + 12 + ct.length); tudo.set(efPub); tudo.set(iv, 65); tudo.set(ct, 77);
+  return 'E1:' + bytesB64(tudo);
+}
+async function ghApi(caminho, opt = {}, token = ghCfg().token) {
+  let r;
+  try { r = await fetch(`https://api.github.com/repos/${ghRepo()}${caminho ? '/' + caminho : ''}`, { ...opt, headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token, 'X-GitHub-Api-Version': '2022-11-28', ...(opt.headers || {}) } }); }
+  catch (e) { throw { code: 'rede' }; }
+  if (r.status === 404 && opt.ok404) return null;
+  if (!r.ok) throw { code: r.status === 401 ? 'token' : r.status === 403 || r.status === 404 ? 'permissao' : r.status === 409 ? 'conflito' : 'erro', status: r.status };
+  return r.json();
+}
+const GH_MSG = { token: 'O GitHub não aceitou o token (expirado ou errado). Cole um novo.', permissao: 'O token não tem permissão para gravar no repositório meu-dia-a-dia. Confira o passo 3.', rede: 'Sem internet agora. Os avisos serão atualizados quando a conexão voltar.', conflito: 'O GitHub estava ocupado. Tente salvar de novo.', erro: 'O GitHub deu erro ao salvar. Tente de novo daqui a pouco.' };
+let ghEnviando = null;
+async function sincronizarLembretes(forcar) {
+  if (window.claude || !ghCfg().token || !S.push || !S.push.sub) return false;
+  const texto = codigoLembretes();
+  let ult = ''; try { ult = localStorage.getItem(GH_ULT) || ''; } catch (e) { }
+  if (!forcar && ult === texto) return true;
+  if (ghEnviando) return ghEnviando;
+  ghEnviando = (async () => {
+    try {
+      const enc = await cifrarParaServidor(texto);
+      for (let tent = 0; tent < 2; tent++) {
+        const atual = await ghApi('contents/servidor/lembretes.enc?ref=main', { ok404: true });
+        try {
+          await ghApi('contents/servidor/lembretes.enc', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Atualiza lembretes (pelo app)', content: btoa(enc + '\n'), branch: 'main', ...(atual ? { sha: atual.sha } : {}) }) });
+          break;
+        } catch (e) { if (e.code !== 'conflito' || tent) throw e; }
+      }
+      try { localStorage.setItem(GH_ULT, texto); } catch (e) { }
+      return true;
+    } finally { ghEnviando = null; }
+  })();
+  return ghEnviando;
+}
+let ghTimer = null;
+function agendarSync() { if (window.claude || !ghCfg().token) return; clearTimeout(ghTimer); ghTimer = setTimeout(() => sincronizarLembretes(false).catch(() => { }), 4000); }
+async function statusServidor() {
+  const el = $('#srv-status'); if (!el) return;
+  try {
+    const r = await fetch('servidor/status.json?' + Date.now(), { cache: 'no-store' });
+    const st = r.ok ? await r.json() : null;
+    if (!$('#srv-status')) return;
+    el.innerHTML = !st ? '<span class="muted">Servidor: ainda sem notícias (ele roda a cada 5 minutos).</span>'
+      : !st.chave ? '<span class="neg">Servidor: falta o secret VAPID_PRIVATE_KEY no GitHub (Settings > Secrets and variables > Actions).</span>'
+      : st.erro ? '<span class="neg">Servidor: não conseguiu ler os lembretes. Toque em "Salvar notificações" de novo.</span>'
+      : st.inscricao === 'expirada' ? '<span class="neg">Servidor: o iPhone recusou o último aviso. Desative e ative as notificações e salve de novo.</span>'
+      : st.config ? `<span class="pos">Servidor funcionando.</span>${st.ultimoEnvio ? ` <span class="muted">Último aviso: ${new Date(st.ultimoEnvio).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.</span>` : ''}`
+      : '<span class="muted">Servidor: esperando você salvar as notificações.</span>';
+  } catch (e) { /* offline */ }
+}
+function ghHTML() {
+  if (ghCfg().token) return `<p class="small" style="margin:10px 0 0">🔗 Ligado ao GitHub: ao salvar, os avisos passam a valer sozinhos em até 5 minutos. <button type="button" class="mini" data-act="desligarGH">desligar</button></p>`;
+  const novo = 'https://github.com/settings/personal-access-tokens/new?name=Meu+dia+a+dia+-+lembretes&description=App+grava+os+lembretes&contents=write';
+  return `<div class="gh-box"><b>Ligar ao GitHub (uma vez só)</b>
+    <ol class="small" style="margin:6px 0;padding-left:18px">
+      <li>Abra <a href="${novo}" target="_blank" rel="noopener">github.com › novo token</a> (entre na sua conta se pedir).</li>
+      <li>Em <b>Expiration</b>, escolha <b>No expiration</b> (ou o maior prazo).</li>
+      <li>Em <b>Repository access</b>, marque <b>Only select repositories</b> e escolha <b>meu-dia-a-dia</b>. Em <b>Permissions › Repository permissions › Contents</b>, escolha <b>Read and write</b>.</li>
+      <li>Toque em <b>Generate token</b>, copie e cole aqui:</li>
+    </ol>
+    <div class="gh-linha"><input id="gh-token" type="password" autocomplete="off" placeholder="github_pat_..."><button type="button" class="btn primary" data-act="salvarGH">Ligar</button></div>
+    <p class="small muted" style="margin:6px 0 0">O token fica salvo só neste aparelho e só consegue mexer no repositório do app.</p></div>`;
 }
 function codigoLembretes() {
   const L = S.lembretes, h = hoje(), prazos = [];
@@ -1247,8 +1342,11 @@ function ligarLembretes() {
       if (!S.push || !S.push.sub) return;
       for (const k of Object.keys(novo)) Object.assign(L[k], novo[k]);
       save();
-      mostrarTexto('Envie este código para o Claude', codigoLembretes());
-      st.textContent = 'Código gerado. Copie e envie para o Claude no projeto.';
+      if (!ghCfg().token) { st.className = 'small warn'; st.textContent = 'Escolhas salvas. Falta ligar ao GitHub (acima) para os avisos começarem.'; $('#gh-token')?.focus(); return; }
+      salvandoLemb = true; btn.disabled = true; st.className = 'small muted'; st.textContent = 'Salvando no servidor…';
+      try { await sincronizarLembretes(true); st.className = 'small pos'; st.textContent = 'Pronto! Os avisos passam a valer em até 5 minutos.'; }
+      catch (err) { st.className = 'small neg'; st.textContent = GH_MSG[err && err.code] || GH_MSG.erro; }
+      salvandoLemb = false; btn.disabled = false;
       return;
     }
     salvandoLemb = true; btn.disabled = true; st.className = 'small muted'; st.textContent = 'Atualizando sua agenda…';
@@ -1293,7 +1391,7 @@ function render() {
   document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('active', a.dataset.r === rota));
   rotaAtual = rota;
   $('#view').innerHTML = V[rota]();
-  if (rota === 'config') ligarConfig();
+  if (rota === 'config') { ligarConfig(); statusServidor(); }
   if (rota === 'carro') ligarCarro();
 }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
@@ -1307,6 +1405,7 @@ if (!window.claude && 'serviceWorker' in navigator && (location.protocol === 'ht
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (tinhaSW && !dlg.open && !recarregou) { recarregou = true; location.reload(); } });
 }
 var recarregou = false;
+setTimeout(() => sincronizarLembretes(false).catch(() => { }), 3000); // prazos do dia
 // Google Agenda: só funciona quando o app é aberto pelo Claude (conector do Google Agenda)
 // Nota fiscal por foto: só quando o app é aberto pelo Claude
 (async () => {
