@@ -4,7 +4,7 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: lembretes
   cancel-in-progress: false
@@ -12,10 +12,17 @@ jobs:
   enviar:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
+      # o que já foi enviado hoje fica no cache do Actions (o workflow não grava nada no repositório)
+      - name: Lembrar o que já foi enviado
+        uses: actions/cache/restore@v4
+        with:
+          path: servidor/estado.json
+          key: lembretes-estado-${{ github.run_id }}
+          restore-keys: lembretes-estado-
       - run: npm install --prefix servidor --no-audit --no-fund
       - run: node servidor/enviar.mjs
         env:
@@ -23,12 +30,7 @@ jobs:
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
       - name: Guardar o que já foi enviado
-        run: |
-          if [ -n "$(git status --porcelain servidor/estado.json servidor/status.json)" ]; then
-            git config user.name "lembretes-bot"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add servidor/estado.json servidor/status.json
-            git commit -m "Lembretes enviados"
-            git pull --rebase origin main
-            git push
-          fi
+        uses: actions/cache/save@v4
+        with:
+          path: servidor/estado.json
+          key: lembretes-estado-${{ github.run_id }}

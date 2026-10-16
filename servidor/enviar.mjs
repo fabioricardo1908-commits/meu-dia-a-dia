@@ -5,7 +5,7 @@
 // Sem LEMBRETES, lê servidor/lembretes.enc, gravado pelo próprio app ao salvar as notificações.
 // Formato "E1:": o app cifra com a chave PÚBLICA VAPID (ECDH P-256 + AES-256-GCM); só a privada abre.
 // Formato antigo (sem prefixo): AES-256-GCM com chave sha256('lembretes:' + privada), de servidor/cifrar.mjs.
-// Grava servidor/status.json (sem dados pessoais) para o app mostrar se o servidor está funcionando.
+// Nunca falha o workflow (falha gera e-mail do GitHub): problemas aparecem no resumo da execução.
 import webpush from 'web-push';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash, createDecipheriv, createECDH } from 'node:crypto';
@@ -16,12 +16,12 @@ const ESTADO = new URL('./estado.json', import.meta.url);
 
 const privada = (process.env.VAPID_PRIVATE_KEY || '').trim();
 const CIFRADO = new URL('./lembretes.enc', import.meta.url);
-const STATUS = new URL('./status.json', import.meta.url);
 let status = { chave: !!privada, config: false, inscricao: null, erro: null };
 function gravarStatus() {
-  const antes = existsSync(STATUS) ? readFileSync(STATUS, 'utf8') : '';
-  const novo = JSON.stringify({ ...(antes ? JSON.parse(antes) : {}), ...status }, null, 1) + '\n';
-  if (novo !== antes) writeFileSync(STATUS, novo);
+  if (!existsSync(ESTADO)) writeFileSync(ESTADO, JSON.stringify({ enviados: [] }) + '\n'); // o cache precisa do arquivo
+  const linhas = [!status.chave ? '⚠️ Falta o secret VAPID_PRIVATE_KEY.' : status.erro ? '⚠️ Não consegui abrir servidor/lembretes.enc.' : status.config ? '✅ Lembretes configurados.' : 'Ainda sem lembretes salvos pelo app.'];
+  if (status.inscricao === 'expirada') linhas.push('⚠️ O iPhone recusou o aviso: ative as notificações de novo no app e salve.');
+  if (process.env.GITHUB_STEP_SUMMARY) try { writeFileSync(process.env.GITHUB_STEP_SUMMARY, linhas.join('\n') + '\n', { flag: 'a' }); } catch (e) { }
 }
 function decifrar() {
   if (!privada || !existsSync(CIFRADO)) return '';
@@ -44,8 +44,11 @@ let codigo = (process.env.LEMBRETES || '').trim();
 if (!codigo) try { codigo = decifrar().trim(); } catch (e) { status.erro = 'nao_decifrou'; console.error('Não consegui abrir servidor/lembretes.enc:', e.message); }
 if (!codigo.startsWith('MDD1:') || !privada) { gravarStatus(); console.log(privada ? 'Sem configuração de lembretes; nada a fazer.' : 'Falta o secret VAPID_PRIVATE_KEY.'); process.exit(0); }
 status.config = true; status.erro = null;
-const cfg = JSON.parse(Buffer.from(codigo.slice(5), 'base64').toString('utf8'));
-webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://github.com', PUBLICA, privada);
+let cfg;
+try {
+  cfg = JSON.parse(Buffer.from(codigo.slice(5), 'base64').toString('utf8'));
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://github.com', PUBLICA, privada);
+} catch (e) { status.erro = 'config'; gravarStatus(); console.error('Configuração inválida:', e.message); process.exit(0); }
 
 // data e hora locais no fuso do usuário
 const partes = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: cfg.tz || 'America/Fortaleza', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short' })
@@ -85,4 +88,4 @@ for (const [h, titulo, texto, url] of avisos) {
   enviados.add(chave); mudou = true;
 }
 gravarStatus();
-if (mudou) writeFileSync(ESTADO, JSON.stringify({ enviados: [...enviados] }, null, 1) + '\n');
+writeFileSync(ESTADO, JSON.stringify({ enviados: [...enviados] }, null, 1) + '\n');

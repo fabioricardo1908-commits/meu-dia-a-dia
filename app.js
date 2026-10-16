@@ -1209,7 +1209,6 @@ function lembretesHTML() {
     : perm === 'denied' ? '' : '<button type="button" class="btn primary" data-act="ativarPush">Ativar notificações</button>'}</div>
   ${lembTogglesHTML(L)}
   ${ghHTML()}
-  <p class="small" id="srv-status" style="margin:8px 0 0"></p>
   <p class="small muted" id="l-status" style="margin:6px 0 0"></p>
   <div class="form-actions"><span class="sp"></span><button class="btn primary" ${ativo ? '' : 'disabled'}>Salvar notificações</button></div></form>`;
 }
@@ -1288,20 +1287,6 @@ async function sincronizarLembretes(forcar) {
 }
 let ghTimer = null;
 function agendarSync() { if (window.claude || !ghCfg().token) return; clearTimeout(ghTimer); ghTimer = setTimeout(() => sincronizarLembretes(false).catch(() => { }), 4000); }
-async function statusServidor() {
-  const el = $('#srv-status'); if (!el) return;
-  try {
-    const r = await fetch('servidor/status.json?' + Date.now(), { cache: 'no-store' });
-    const st = r.ok ? await r.json() : null;
-    if (!$('#srv-status')) return;
-    el.innerHTML = !st ? '<span class="muted">Servidor: ainda sem notícias (ele roda a cada 5 minutos).</span>'
-      : !st.chave ? '<span class="neg">Servidor: falta o secret VAPID_PRIVATE_KEY no GitHub (Settings > Secrets and variables > Actions).</span>'
-      : st.erro ? '<span class="neg">Servidor: não conseguiu ler os lembretes. Toque em "Salvar notificações" de novo.</span>'
-      : st.inscricao === 'expirada' ? '<span class="neg">Servidor: o iPhone recusou o último aviso. Desative e ative as notificações e salve de novo.</span>'
-      : st.config ? `<span class="pos">Servidor funcionando.</span>${st.ultimoEnvio ? ` <span class="muted">Último aviso: ${new Date(st.ultimoEnvio).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.</span>` : ''}`
-      : '<span class="muted">Servidor: esperando você salvar as notificações.</span>';
-  } catch (e) { /* offline */ }
-}
 function ghHTML() {
   if (ghCfg().token) return `<p class="small" style="margin:10px 0 0">🔗 Ligado ao GitHub: ao salvar, os avisos passam a valer sozinhos em até 5 minutos. <button type="button" class="mini" data-act="desligarGH">desligar</button></p>`;
   const novo = 'https://github.com/settings/personal-access-tokens/new?name=Meu+dia+a+dia+-+lembretes&description=App+grava+os+lembretes&contents=write';
@@ -1391,7 +1376,7 @@ function render() {
   document.querySelectorAll('#menu a').forEach(a => a.classList.toggle('active', a.dataset.r === rota));
   rotaAtual = rota;
   $('#view').innerHTML = V[rota]();
-  if (rota === 'config') { ligarConfig(); statusServidor(); }
+  if (rota === 'config') ligarConfig();
   if (rota === 'carro') ligarCarro();
 }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
